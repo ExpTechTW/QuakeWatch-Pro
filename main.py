@@ -129,7 +129,8 @@ def compute_psd_db(fft_data):
 def init_filter_coeffs():
     """預先計算濾波器係數"""
     global FILTER_COEFFS
-    FILTER_COEFFS = jma_combined_filter(np.abs(FILTER_FREQS)).astype(np.float32)
+    FILTER_COEFFS = jma_combined_filter(
+        np.abs(FILTER_FREQS)).astype(np.float32)
 
 
 def apply_jma_filter(data, sampling_rate=50):
@@ -262,7 +263,8 @@ def parsing_thread():
                                 if first_timestamp is None:
                                     first_timestamp = timestamp
 
-                            adjusted_time = (timestamp - first_timestamp) / 1000.0
+                            adjusted_time = (
+                                timestamp - first_timestamp) / 1000.0
                         else:
                             adjusted_time = received_time - first_received_time
 
@@ -294,7 +296,8 @@ def parsing_thread():
                             first_timestamp = timestamp
                         intensity_history.append(intensity)
                         a_history.append(a)
-                        intensity_time.append(received_time - first_received_time)
+                        intensity_time.append(
+                            received_time - first_received_time)
                         intensity_timestamp.append(timestamp)
                         parse_stats['total_parsed'] += 1
 
@@ -333,7 +336,8 @@ def parsing_thread():
                                 if first_timestamp is None:
                                     first_timestamp = timestamp
 
-                            adjusted_time_filt = (timestamp - first_timestamp) / 1000.0
+                            adjusted_time_filt = (
+                                timestamp - first_timestamp) / 1000.0
                         else:
                             adjusted_time_filt = received_time - first_received_time
 
@@ -379,7 +383,8 @@ def parsing_thread():
                             z_filtered.clear()
                             z_filtered.extend(z_filt)
 
-                            pga_filt_arr = np.sqrt(x_filt**2 + y_filt**2 + z_filt**2)
+                            pga_filt_arr = np.sqrt(
+                                x_filt**2 + y_filt**2 + z_filt**2)
                             pga_filtered.clear()
                             pga_filtered.extend(pga_filt_arr)
                     except Exception as e:
@@ -389,9 +394,11 @@ def parsing_thread():
 
         if current_check_time - parse_stats['last_report_time'] >= report_interval:
             with data_lock:
-                parsed_count = parse_stats['total_parsed'] - parse_stats['last_report_count']
+                parsed_count = parse_stats['total_parsed'] - \
+                    parse_stats['last_report_count']
                 rate = parsed_count / report_interval
-                time_span = time_data[-1] - time_data[0] if len(time_data) > 1 else 0
+                time_span = time_data[-1] - \
+                    time_data[0] if len(time_data) > 1 else 0
 
     print("[解析線程] 已停止")
 
@@ -405,7 +412,8 @@ def update_plot(frame):
     global _last_fft_update_time
 
     current_time = time.time() - start_time
-    should_update_fft = (current_time - _last_fft_update_time) >= _fft_update_interval
+    should_update_fft = (
+        current_time - _last_fft_update_time) >= _fft_update_interval
 
     with data_lock:
         if len(time_data) > 0:
@@ -457,17 +465,23 @@ def update_plot(frame):
             line_fft_z.set_data(FFT_FREQS_POS, compute_psd_db(fft_z))
 
             if len(x_filtered) >= FFT_SIZE and len(x_filt_list) > 0:
-                x_filt_arr = np.array(x_filt_list[-FFT_SIZE:], dtype=np.float32)
-                y_filt_arr = np.array(y_filt_list[-FFT_SIZE:], dtype=np.float32)
-                z_filt_arr = np.array(z_filt_list[-FFT_SIZE:], dtype=np.float32)
+                x_filt_arr = np.array(
+                    x_filt_list[-FFT_SIZE:], dtype=np.float32)
+                y_filt_arr = np.array(
+                    y_filt_list[-FFT_SIZE:], dtype=np.float32)
+                z_filt_arr = np.array(
+                    z_filt_list[-FFT_SIZE:], dtype=np.float32)
 
                 fft_x_filt = np.fft.fft(x_filt_arr * FFT_WINDOW)
                 fft_y_filt = np.fft.fft(y_filt_arr * FFT_WINDOW)
                 fft_z_filt = np.fft.fft(z_filt_arr * FFT_WINDOW)
 
-                line_fft_x_filt.set_data(FFT_FREQS_POS, compute_psd_db(fft_x_filt))
-                line_fft_y_filt.set_data(FFT_FREQS_POS, compute_psd_db(fft_y_filt))
-                line_fft_z_filt.set_data(FFT_FREQS_POS, compute_psd_db(fft_z_filt))
+                line_fft_x_filt.set_data(
+                    FFT_FREQS_POS, compute_psd_db(fft_x_filt))
+                line_fft_y_filt.set_data(
+                    FFT_FREQS_POS, compute_psd_db(fft_y_filt))
+                line_fft_z_filt.set_data(
+                    FFT_FREQS_POS, compute_psd_db(fft_z_filt))
 
             _last_fft_update_time = current_time
 
@@ -495,14 +509,6 @@ def update_plot(frame):
             line_v.set_data(filtered_time_list, v_list)
             ax6.set_xlim(x_min, x_max)
 
-            if frame % 100 == 0:
-                print(f"[DEBUG 圖表6] filtered_len={filtered_len}, time_range=[{filtered_time_list[0]:.2f}, {filtered_time_list[-1]:.2f}], h1_range=[{min(h1_list):.4f}, {max(h1_list):.4f}]")
-                print(f"[DEBUG 圖表6] x_min={x_min:.2f}, x_max={x_max:.2f}, first_timestamp={first_timestamp}, first_received_time={first_received_time:.2f}")
-                print(f"[DEBUG 圖表6] 前5個時間點: {filtered_time_list[:5]}")
-        else:
-            if frame % 100 == 0:
-                print(f"[DEBUG 圖表6] 沒有 filtered_time 數據！")
-
     for fig in [fig1, fig2, fig3, fig4, fig5, fig6]:
         fig.canvas.draw_idle()
     fig6.canvas.flush_events()
@@ -517,9 +523,12 @@ def print_statistics():
     print(f"執行時間: {elapsed:.1f} 秒")
 
     if elapsed > 0:
-        print(f"感測器封包: {packet_count['sensor']} ({packet_count['sensor']/elapsed:.1f} Hz)")
-        print(f"強度封包: {packet_count['intensity']} ({packet_count['intensity']/elapsed:.1f} Hz)")
-        print(f"過濾封包: {packet_count['filtered']} ({packet_count['filtered']/elapsed:.1f} Hz)")
+        print(
+            f"感測器封包: {packet_count['sensor']} ({packet_count['sensor']/elapsed:.1f} Hz)")
+        print(
+            f"強度封包: {packet_count['intensity']} ({packet_count['intensity']/elapsed:.1f} Hz)")
+        print(
+            f"過濾封包: {packet_count['filtered']} ({packet_count['filtered']/elapsed:.1f} Hz)")
         print(f"錯誤封包: {packet_count['error']}")
 
     if first_timestamp is not None and first_timestamp > 0:
@@ -529,8 +538,10 @@ def print_statistics():
         if len(timestamp_data) > 0:
             latest = timestamp_data[-1]
             if latest > 0:
-                dt_latest = datetime.fromtimestamp(latest / 1000.0, tz=timezone.utc)
-                print(f"最新時間戳記: {dt_latest.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} UTC")
+                dt_latest = datetime.fromtimestamp(
+                    latest / 1000.0, tz=timezone.utc)
+                print(
+                    f"最新時間戳記: {dt_latest.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} UTC")
                 duration_ms = latest - first_timestamp
                 print(f"資料時間跨度: {duration_ms / 1000.0:.2f} 秒")
     else:
@@ -562,7 +573,8 @@ def main():
     print("✓ 濾波器係數已預先計算")
 
     try:
-        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'Heiti TC', 'SimHei']
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS',
+                                           'Heiti TC', 'SimHei']
         plt.rcParams['axes.unicode_minus'] = False
     except:
         pass
@@ -587,77 +599,92 @@ def main():
     ax6 = fig6.add_subplot(111)
 
     ax1.set_facecolor('#161b22')
-    ax1.set_title('三軸加速度', fontsize=14, fontweight='bold', color='#58a6ff', pad=12)
+    ax1.set_title('三軸加速度', fontsize=14, fontweight='bold',
+                  color='#58a6ff', pad=12)
     ax1.set_xlabel('時間 (秒)', fontsize=11)
     ax1.set_ylabel('加速度 (Gal)', fontsize=11)
     ax1.grid(True, alpha=0.25, linestyle='--', linewidth=0.7)
 
-    line_x, = ax1.plot([], [], '#ff6b6b', label='X 軸', linewidth=1.3, alpha=0.85)
-    line_y, = ax1.plot([], [], '#4ecdc4', label='Y 軸', linewidth=1.3, alpha=0.85)
-    line_z, = ax1.plot([], [], '#45b7d1', label='Z 軸', linewidth=1.3, alpha=0.85)
+    line_x, = ax1.plot([], [], '#ff6b6b', label='X 軸',
+                       linewidth=1.3, alpha=0.85)
+    line_y, = ax1.plot([], [], '#4ecdc4', label='Y 軸',
+                       linewidth=1.3, alpha=0.85)
+    line_z, = ax1.plot([], [], '#45b7d1', label='Z 軸',
+                       linewidth=1.3, alpha=0.85)
 
     ax1.legend(loc='upper right', fontsize=10, framealpha=0.8)
-    ax1.set_ylim(-5, 5)
+    ax1.set_ylim(-1, 1)
     ax1.axhline(y=0, color='gray', linestyle='-', linewidth=0.7, alpha=0.3)
     fig1.tight_layout()
 
     ax2.set_facecolor('#161b22')
-    ax2.set_title('三軸濾波', fontsize=14, fontweight='bold', color='#58a6ff', pad=12)
+    ax2.set_title('三軸濾波', fontsize=14, fontweight='bold',
+                  color='#58a6ff', pad=12)
     ax2.set_xlabel('時間 (秒)', fontsize=11)
     ax2.set_ylabel('加速度 (Gal)', fontsize=11)
     ax2.grid(True, alpha=0.25, linestyle='--', linewidth=0.7)
 
-    line_x_filt, = ax2.plot([], [], '#ff6b6b', label='X 軸', linewidth=1.3, alpha=0.85)
-    line_y_filt, = ax2.plot([], [], '#4ecdc4', label='Y 軸', linewidth=1.3, alpha=0.85)
-    line_z_filt, = ax2.plot([], [], '#45b7d1', label='Z 軸', linewidth=1.3, alpha=0.85)
+    line_x_filt, = ax2.plot(
+        [], [], '#ff6b6b', label='X 軸', linewidth=1.3, alpha=0.85)
+    line_y_filt, = ax2.plot(
+        [], [], '#4ecdc4', label='Y 軸', linewidth=1.3, alpha=0.85)
+    line_z_filt, = ax2.plot(
+        [], [], '#45b7d1', label='Z 軸', linewidth=1.3, alpha=0.85)
 
     ax2.legend(loc='upper right', fontsize=10, framealpha=0.8)
-    ax2.set_ylim(-5, 5)
+    ax2.set_ylim(-1, 1)
     ax2.axhline(y=0, color='gray', linestyle='-', linewidth=0.7, alpha=0.3)
     fig2.tight_layout()
 
     ax3.set_facecolor('#161b22')
-    ax3.set_title('三軸頻譜 (未濾波, 0-25Hz)', fontsize=13, fontweight='bold', color='#58a6ff', pad=10)
+    ax3.set_title('三軸頻譜 (未濾波, 0-25Hz)', fontsize=13,
+                  fontweight='bold', color='#58a6ff', pad=10)
     ax3.set_xlabel('頻率 (Hz)', fontsize=10)
     ax3.set_ylabel('功率譜密度 (dB)', fontsize=10)
     ax3.grid(True, alpha=0.2, linestyle='--', linewidth=0.6, which='both')
     ax3.set_xlim(0, 25)
     ax3.set_ylim(-110, 0)
 
-    line_fft_x, = ax3.plot([], [], '#ff6b6b', label='X 軸', linewidth=1.2, alpha=0.8)
-    line_fft_y, = ax3.plot([], [], '#4ecdc4', label='Y 軸', linewidth=1.2, alpha=0.8)
-    line_fft_z, = ax3.plot([], [], '#45b7d1', label='Z 軸', linewidth=1.2, alpha=0.8)
+    line_fft_x, = ax3.plot([], [], '#ff6b6b', label='X 軸',
+                           linewidth=1.2, alpha=0.8)
+    line_fft_y, = ax3.plot([], [], '#4ecdc4', label='Y 軸',
+                           linewidth=1.2, alpha=0.8)
+    line_fft_z, = ax3.plot([], [], '#45b7d1', label='Z 軸',
+                           linewidth=1.2, alpha=0.8)
     ax3.legend(loc='upper right', fontsize=9, framealpha=0.7)
-    print(f"[INIT] 圖表3 線條: X={id(line_fft_x)}, Y={id(line_fft_y)}, Z={id(line_fft_z)}")
-    print(f"[INIT] 圖表3 總線條數: {len(ax3.get_lines())}")
 
     ax4.set_facecolor('#161b22')
-    ax4.set_title('三軸頻譜 (濾波後, 0-25Hz)', fontsize=13, fontweight='bold', color='#58a6ff', pad=10)
+    ax4.set_title('三軸頻譜 (濾波後, 0-25Hz)', fontsize=13,
+                  fontweight='bold', color='#58a6ff', pad=10)
     ax4.set_xlabel('頻率 (Hz)', fontsize=10)
     ax4.set_ylabel('功率譜密度 (dB)', fontsize=10)
     ax4.grid(True, alpha=0.2, linestyle='--', linewidth=0.6, which='both')
     ax4.set_xlim(0, 25)
     ax4.set_ylim(-110, 0)
 
-    line_fft_x_filt, = ax4.plot([], [], '#ff6b6b', label='X 軸', linewidth=1.2, alpha=0.8)
-    line_fft_y_filt, = ax4.plot([], [], '#4ecdc4', label='Y 軸', linewidth=1.2, alpha=0.8)
-    line_fft_z_filt, = ax4.plot([], [], '#45b7d1', label='Z 軸', linewidth=1.2, alpha=0.8)
+    line_fft_x_filt, = ax4.plot(
+        [], [], '#ff6b6b', label='X 軸', linewidth=1.2, alpha=0.8)
+    line_fft_y_filt, = ax4.plot(
+        [], [], '#4ecdc4', label='Y 軸', linewidth=1.2, alpha=0.8)
+    line_fft_z_filt, = ax4.plot(
+        [], [], '#45b7d1', label='Z 軸', linewidth=1.2, alpha=0.8)
     ax4.legend(loc='upper right', fontsize=9, framealpha=0.7)
-    print(f"[INIT] 圖表4 線條: X={id(line_fft_x_filt)}, Y={id(line_fft_y_filt)}, Z={id(line_fft_z_filt)}")
-    print(f"[INIT] 圖表4 總線條數: {len(ax4.get_lines())}")
 
     ax5.set_facecolor('#161b22')
     ax5_twin = ax5.twinx()
     ax5_twin.set_facecolor('#161b22')
 
-    ax5.set_title('PGA + 計測震度 + 震度階級', fontsize=13, fontweight='bold', color='#58a6ff', pad=10)
+    ax5.set_title('PGA + 計測震度 + 震度階級', fontsize=13,
+                  fontweight='bold', color='#58a6ff', pad=10)
     ax5.set_xlabel('時間 (秒)', fontsize=10)
     ax5.set_ylabel('PGA (Gal)', fontsize=10, color='white')
     ax5_twin.set_ylabel('震度', fontsize=10, color='#ffd93d')
     ax5.grid(True, alpha=0.25, linestyle='--', linewidth=0.6)
 
-    line_pga_raw_5, = ax5.plot([], [], '#ff9500', label='PGA 未濾波', linewidth=1.8, alpha=0.85)
-    line_pga_filt_5, = ax5.plot([], [], '#6bcf7f', label='PGA 濾波 (a)', linewidth=2, alpha=0.95)
+    line_pga_raw_5, = ax5.plot(
+        [], [], '#ff9500', label='PGA 未濾波', linewidth=1.8, alpha=0.85)
+    line_pga_filt_5, = ax5.plot(
+        [], [], '#6bcf7f', label='PGA 濾波 (a)', linewidth=2, alpha=0.95)
 
     line_i, = ax5_twin.plot([], [], '#ffd93d', label='計測震度', linewidth=2.5, marker='o',
                             markersize=5, markerfacecolor='#ffd93d', markeredgecolor='white',
@@ -668,27 +695,33 @@ def main():
     ax5.axhline(y=0, color='gray', linestyle='-', linewidth=0.6, alpha=0.3)
 
     for level in [1, 2, 3, 4, 5]:
-        ax5_twin.axhline(y=level, color='gray', linestyle=':', linewidth=0.5, alpha=0.25)
+        ax5_twin.axhline(y=level, color='gray', linestyle=':',
+                         linewidth=0.5, alpha=0.25)
 
     lines_leg = [line_pga_raw_5, line_pga_filt_5, line_i]
     labels_leg = ['PGA 未濾波', 'PGA 濾波 (a)', '計測震度']
-    ax5.legend(lines_leg, labels_leg, loc='upper right', fontsize=10, framealpha=0.8)
+    ax5.legend(lines_leg, labels_leg, loc='upper right',
+               fontsize=10, framealpha=0.8)
     fig3.tight_layout()
     fig4.tight_layout()
     fig5.tight_layout()
 
     ax6.set_facecolor('#161b22')
-    ax6.set_title('Serial 三軸濾波 (ESP32)', fontsize=14, fontweight='bold', color='#58a6ff', pad=12)
+    ax6.set_title('Serial 三軸濾波 (ESP32)', fontsize=14,
+                  fontweight='bold', color='#58a6ff', pad=12)
     ax6.set_xlabel('時間 (秒)', fontsize=11)
     ax6.set_ylabel('加速度 (Gal)', fontsize=11)
     ax6.grid(True, alpha=0.25, linestyle='--', linewidth=0.7)
 
-    line_h1, = ax6.plot([], [], '#ff6b6b', label='H1 軸', linewidth=1.3, alpha=0.85)
-    line_h2, = ax6.plot([], [], '#4ecdc4', label='H2 軸', linewidth=1.3, alpha=0.85)
-    line_v, = ax6.plot([], [], '#45b7d1', label='V 軸', linewidth=1.3, alpha=0.85)
+    line_h1, = ax6.plot([], [], '#ff6b6b', label='H1 軸',
+                        linewidth=1.3, alpha=0.85)
+    line_h2, = ax6.plot([], [], '#4ecdc4', label='H2 軸',
+                        linewidth=1.3, alpha=0.85)
+    line_v, = ax6.plot([], [], '#45b7d1', label='V 軸',
+                       linewidth=1.3, alpha=0.85)
 
     ax6.legend(loc='upper right', fontsize=10, framealpha=0.8)
-    ax6.set_ylim(-5, 5)
+    ax6.set_ylim(-1, 1)
     ax6.axhline(y=0, color='gray', linestyle='-', linewidth=0.7, alpha=0.3)
     fig6.tight_layout()
 
@@ -697,7 +730,8 @@ def main():
     parser = threading.Thread(target=parsing_thread, args=(), daemon=True)
     parser.start()
 
-    ani = FuncAnimation(fig1, update_plot, interval=50, blit=False, cache_frame_data=False)
+    ani = FuncAnimation(fig1, update_plot, interval=50,
+                        blit=False, cache_frame_data=False)
 
     try:
         plt.show()
