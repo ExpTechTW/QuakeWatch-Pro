@@ -58,7 +58,7 @@ parse_stats = {
     'last_report_count': 0
 }
 
-FFT_SIZE = 2048
+FFT_SIZE = 1024
 FFT_FS = 50
 FFT_N = FFT_SIZE
 FFT_FREQS_POS = np.fft.rfftfreq(FFT_N, d=1.0/FFT_FS)
@@ -460,28 +460,33 @@ def update_plot(frame):
             fft_y = np.fft.fft(y_arr * FFT_WINDOW)
             fft_z = np.fft.fft(z_arr * FFT_WINDOW)
 
-            line_fft_x.set_data(FFT_FREQS_POS, compute_psd_db(fft_x))
-            line_fft_y.set_data(FFT_FREQS_POS, compute_psd_db(fft_y))
-            line_fft_z.set_data(FFT_FREQS_POS, compute_psd_db(fft_z))
+            psd_x = compute_psd_db(fft_x)
+            psd_y = compute_psd_db(fft_y)
+            psd_z = compute_psd_db(fft_z)
+
+            line_fft_x.set_data(FFT_FREQS_POS, psd_x)
+            line_fft_y.set_data(FFT_FREQS_POS, psd_y)
+            line_fft_z.set_data(FFT_FREQS_POS, psd_z)
 
             if len(x_filtered) >= FFT_SIZE and len(x_filt_list) > 0:
-                x_filt_arr = np.array(
-                    x_filt_list[-FFT_SIZE:], dtype=np.float32)
-                y_filt_arr = np.array(
-                    y_filt_list[-FFT_SIZE:], dtype=np.float32)
-                z_filt_arr = np.array(
-                    z_filt_list[-FFT_SIZE:], dtype=np.float32)
+                x_filt_arr = np.array(x_filt_list[-FFT_SIZE:], dtype=np.float32)
+                y_filt_arr = np.array(y_filt_list[-FFT_SIZE:], dtype=np.float32)
+                z_filt_arr = np.array(z_filt_list[-FFT_SIZE:], dtype=np.float32)
 
                 fft_x_filt = np.fft.fft(x_filt_arr * FFT_WINDOW)
                 fft_y_filt = np.fft.fft(y_filt_arr * FFT_WINDOW)
                 fft_z_filt = np.fft.fft(z_filt_arr * FFT_WINDOW)
 
-                line_fft_x_filt.set_data(
-                    FFT_FREQS_POS, compute_psd_db(fft_x_filt))
-                line_fft_y_filt.set_data(
-                    FFT_FREQS_POS, compute_psd_db(fft_y_filt))
-                line_fft_z_filt.set_data(
-                    FFT_FREQS_POS, compute_psd_db(fft_z_filt))
+                psd_x_filt = compute_psd_db(fft_x_filt)
+                psd_y_filt = compute_psd_db(fft_y_filt)
+                psd_z_filt = compute_psd_db(fft_z_filt)
+
+                line_fft_x_filt.set_data(FFT_FREQS_POS, psd_x_filt)
+                line_fft_y_filt.set_data(FFT_FREQS_POS, psd_y_filt)
+                line_fft_z_filt.set_data(FFT_FREQS_POS, psd_z_filt)
+
+                if frame % 100 == 0:
+                    print(f"[DEBUG FFT] 圖表4 更新: X範圍=[{psd_x_filt.min():.1f}, {psd_x_filt.max():.1f}] dB")
 
             _last_fft_update_time = current_time
 
