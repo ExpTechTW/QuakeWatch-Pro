@@ -93,6 +93,7 @@ def clean_old_data():
                 y_data.popleft()
                 z_data.popleft()
                 timestamp_data.popleft()
+                pga_raw.popleft()
 
     if len(intensity_time) > 0:
         remove_count = 0
@@ -133,9 +134,7 @@ def parsing_thread():
     print(f"[解析線程] 已啟動 (時間窗口: {DATA_WINDOW_LENGTH} 秒)\n")
     report_interval = 1.0
     clean_interval = 2.0
-    filter_interval = 0.5
     last_clean_time = time.time()
-    last_filter_time = time.time()
     last_rx_sensor = None
     last_rx_intensity = None
     last_rx_filtered = None
@@ -175,6 +174,10 @@ def parsing_thread():
                         x_data.append(x)
                         y_data.append(y)
                         z_data.append(z)
+
+                        # 即時計算 PGA
+                        pga_value = np.sqrt(x**2 + y**2 + z**2)
+                        pga_raw.append(pga_value)
 
                         if timestamp >= 1000000000000 and first_timestamp is not None:
                             adjusted_time = (
@@ -275,21 +278,6 @@ def parsing_thread():
                 clean_old_data()
             last_clean_time = current_check_time
 
-        if current_check_time - last_filter_time >= filter_interval:
-            if len(x_data) >= 50:
-                with data_lock:
-                    try:
-                        x_arr = np.array(x_data, dtype=np.float32)
-                        y_arr = np.array(y_data, dtype=np.float32)
-                        z_arr = np.array(z_data, dtype=np.float32)
-                        pga_raw_arr = np.sqrt(x_arr**2 + y_arr**2 + z_arr**2)
-
-                        pga_raw.clear()
-                        pga_raw.extend(pga_raw_arr)
-                    except Exception as e:
-                        pass
-
-            last_filter_time = current_check_time
 
         if current_check_time - parse_stats['last_report_time'] >= report_interval:
             with data_lock:
@@ -382,7 +370,7 @@ def update_plot(frame):
 
             _last_fft_update_time = current_time
 
-        if data_len > 0 and len(pga_raw) == data_len:
+        if data_len > 0:
             pga_raw_list = list(pga_raw)
             line_pga_raw_5.set_data(time_list, pga_raw_list)
 
