@@ -277,14 +277,14 @@ def collecting_thread(ser_ref, conn, port_name):
     last_diagnostic_time = time.time()
     reconnect_count = 0
 
-    # 緩衝區設定
-    BUFFER_SIZE = 50
-    WRITE_INTERVAL = 1.0
+    # 緩衝區設定 - 使用延遲寫入策略
+    BUFFER_DELAY_MS = 500  # 只寫入 500ms 前的數據，確保晚到的數據能排序
+    WRITE_INTERVAL = 0.5
     sensor_buffer = []
     filtered_buffer = []
     intensity_buffer = []
 
-    print("[收集線程] 已啟動\n")
+    print("[收集線程] 已啟動 (延遲寫入: 500ms)\n")
 
     while collecting_active.is_set():
         try:
@@ -293,57 +293,76 @@ def collecting_thread(ser_ref, conn, port_name):
                 raise serial.SerialException("串列埠已關閉")
 
             # 批次處理封包
-            results_processed = 0
-            timestamp_start = get_timestamp_utc8()  # 13 位毫秒時間戳
-            start = 0
+            timestamp_start = get_timestamp_utc8()
+            batch_results = []
+
             for _ in range(20):
                 result = parse_serial_data(current_ser)
                 if result is None:
                     break
-
-                # 如果 timestamp 為 0，使用計算的時間（每筆間隔 20ms）
-                if result[1] == 0:
-                    result = (result[0], timestamp_start +
-                              (start * 20), *result[2:])
-                    start += 1
-
-                if result[0] == 'sensor':
-                    print(result[1])
-                # 分類存入緩衝區
-                data_type = result[0]
-                if data_type == 'sensor':
-                    sensor_buffer.append(result)
-                elif data_type == 'filtered':
-                    filtered_buffer.append(result)
-                elif data_type == 'intensity':
-                    intensity_buffer.append(result)
-
-                results_processed += 1
+                batch_results.append(result)
                 last_data_time = time.time()
                 reconnect_count = 0
 
-            print("---")
-            # 寫入資料庫
+            # 計算時間間隔並分配時間戳
+            if batch_results:
+                timestamp_end = get_timestamp_utc8()
+                batch_count = len(batch_results)
+                time_interval = (timestamp_end - timestamp_start) / \
+                    batch_count if batch_count > 1 else 0
+
+                for i, result in enumerate(batch_results):
+                    # 如果 timestamp 為 0，使用平分的時間
+                    if result[1] == 0:
+                        calculated_timestamp = timestamp_start + \
+                            int(i * time_interval)
+                        result = (result[0], calculated_timestamp, *result[2:])
+
+                    if result[0] == 'sensor':
+                        print(f"sensor timestamp: {result[1]}")
+
+                    # 分類存入緩衝區
+                    data_type = result[0]
+                    if data_type == 'sensor':
+                        sensor_buffer.append(result)
+                    elif data_type == 'filtered':
+                        filtered_buffer.append(result)
+                    elif data_type == 'intensity':
+                        intensity_buffer.append(result)
+            # 延遲寫入機制：只寫入足夠舊的數據
             current_time = time.time()
-            should_write = (current_time - last_write_time >= WRITE_INTERVAL or
-                            len(sensor_buffer) >= BUFFER_SIZE or
-                            len(filtered_buffer) >= BUFFER_SIZE or
-                            len(intensity_buffer) >= BUFFER_SIZE)
+            current_timestamp = get_timestamp_utc8()
+            cutoff_timestamp = current_timestamp - BUFFER_DELAY_MS
 
-            if should_write:
-                wrote_sensor = write_to_database(conn, 'sensor', sensor_buffer)
+            if current_time - last_write_time >= WRITE_INTERVAL:
+                # 過濾出可以寫入的數據（時間戳小於 cutoff）
+                sensor_to_write = [
+                    d for d in sensor_buffer if d[1] < cutoff_timestamp]
+                filtered_to_write = [
+                    d for d in filtered_buffer if d[1] < cutoff_timestamp]
+                intensity_to_write = [
+                    d for d in intensity_buffer if d[1] < cutoff_timestamp]
+
+                # 寫入並移除已寫入的數據
+                wrote_sensor = write_to_database(
+                    conn, 'sensor', sensor_to_write)
                 wrote_filtered = write_to_database(
-                    conn, 'filtered', filtered_buffer)
+                    conn, 'filtered', filtered_to_write)
                 wrote_intensity = write_to_database(
-                    conn, 'intensity', intensity_buffer)
+                    conn, 'intensity', intensity_to_write)
 
-                sensor_buffer.clear()
-                filtered_buffer.clear()
-                intensity_buffer.clear()
+                # 保留未寫入的數據（保留在緩衝區中等待後續排序）
+                sensor_buffer = [
+                    d for d in sensor_buffer if d[1] >= cutoff_timestamp]
+                filtered_buffer = [
+                    d for d in filtered_buffer if d[1] >= cutoff_timestamp]
+                intensity_buffer = [
+                    d for d in intensity_buffer if d[1] >= cutoff_timestamp]
+
                 last_write_time = current_time
 
             # 超時檢查
-            if results_processed == 0 and current_time - last_data_time > 5.0:
+            if batch_results == [] and current_time - last_data_time > 5.0:
                 print("[警告] 超過 5 秒未接收數據")
                 raise serial.SerialException("超時未接收數據")
 
