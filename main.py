@@ -16,7 +16,7 @@ from scipy import signal
 
 DB_FILE = 'earthquake_data.db'
 TZ_UTC_8 = timezone(timedelta(hours=8))
-DATA_WINDOW_LENGTH = 300
+DATA_WINDOW_LENGTH = 60
 MAX_SAMPLES_SENSOR = int(DATA_WINDOW_LENGTH * 50 * 1.2)
 MAX_SAMPLES_INTENSITY = int(DATA_WINDOW_LENGTH * 2 * 1.2)
 
@@ -64,7 +64,8 @@ N_HALF_PLUS_ONE = FFT_N // 2 + 1
 
 # 聲譜圖參數
 SPEC_NPERSEG = 50           # FFT 窗口大小：128 樣本 = 2.56 秒
-SPEC_NOVERLAP = 50*0.93     # 重疊樣本數：85/128 = 66.4% 重疊，時間步進 = 0.86 秒
+SPEC_NOVERLAP = 50*0.85     # 重疊樣本數：85/128 = 66.4% 重疊，時間步進 = 0.86 秒
+SPEC_FREQ_MIN = 1           # Hz 顯示的最小頻率
 SPEC_FREQ_MAX = 10          # Hz 顯示的最大頻率（0-10 Hz）
 SPEC_POWER_MIN = -40        # dB 色標最小值
 SPEC_POWER_MAX = 0          # dB 色標最大值
@@ -402,15 +403,15 @@ def update_plot(frame):
             # 轉換為 dB
             Sxx_db = 10 * np.log10(Sxx + 1e-20)
 
-            # 只顯示 0-10 Hz
-            freq_mask = freqs <= SPEC_FREQ_MAX
+            # 只顯示指定頻帶
+            freq_mask = (freqs >= SPEC_FREQ_MIN) & (freqs <= SPEC_FREQ_MAX)
             freqs_plot = freqs[freq_mask]
             Sxx_plot = Sxx_db[freq_mask, :]
 
             # 更新圖像
             spectrogram_image.set_data(Sxx_plot)
             spectrogram_image.set_extent(
-                [spec_x_min, spec_x_max, 0, SPEC_FREQ_MAX])
+                [spec_x_min, spec_x_max, SPEC_FREQ_MIN, SPEC_FREQ_MAX])
 
             # 固定色標範圍（-40 到 0 dB）
             spectrogram_image.set_clim(
