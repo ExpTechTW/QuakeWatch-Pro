@@ -14,6 +14,11 @@ from collections import deque
 from datetime import datetime, timezone, timedelta
 from scipy import signal
 
+# Windows 中文字體設定
+import matplotlib
+matplotlib.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'Microsoft YaHei', 'SimHei']
+matplotlib.rcParams['axes.unicode_minus'] = False
+
 DB_FILE = 'earthquake_data.db'
 TZ_UTC_8 = timezone(timedelta(hours=8))
 DATA_WINDOW_LENGTH = 60
@@ -511,13 +516,7 @@ def main():
 
     print(f"\n✓ 數據庫文件: {DB_FILE}")
 
-    try:
-        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS',
-                                           'Heiti TC', 'SimHei']
-        plt.rcParams['axes.unicode_minus'] = False
-    except:
-        pass
-
+    # 字體已在檔案開頭設定,這裡只設定樣式
     plt.style.use('dark_background')
 
     fig1 = plt.figure(num='圖表1: 三軸加速度', figsize=(10, 5))

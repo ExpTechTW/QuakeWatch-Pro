@@ -82,7 +82,29 @@ def init_database():
     return conn
 
 
-def parse_serial_data(ser):
+def read_exact_bytes(ser, num_bytes, timeout_ms=100):
+    """
+    Windows 相容: 精確讀取指定 bytes
+    """
+    data = bytearray()
+    start_time = time.time()
+    timeout_sec = timeout_ms / 1000.0
+
+    while len(data) < num_bytes:
+        if time.time() - start_time > timeout_sec:
+            return None
+
+        remaining = num_bytes - len(data)
+        chunk = ser.read(remaining)
+        if chunk:
+            data.extend(chunk)
+        elif len(data) == 0:
+            time.sleep(0.001)
+
+    return bytes(data)
+
+
+def parse_serial_data(ser, debug=False):
     """
     解析串列埠資料
     0x53 = Sensor (原始三軸)
@@ -90,20 +112,29 @@ def parse_serial_data(ser):
     0x46 = Filtered (濾波三軸)
     """
     try:
-        header = ser.read(1)
-        if len(header) != 1:
+        # 等待 header byte
+        header = read_exact_bytes(ser, 1, timeout_ms=50, debug=debug)
+        if header is None:
             return None
 
         header_byte = header[0]
 
         if header_byte not in [0x53, 0x49, 0x46]:
             packet_count['error'] += 1
+            if debug and packet_count['error'] <= 20:
+                # 檢查是否為 ASCII 文字 (ESP32 debug 訊息)
+                if 0x20 <= header_byte <= 0x7E:
+                    print(
+                        f"[DEBUG] 無效 header: 0x{header_byte:02X} ('{chr(header_byte)}')")
+                else:
+                    print(f"[DEBUG] 無效 header: 0x{header_byte:02X}")
             return None
 
         # Sensor data (0x53)
         if header_byte == 0x53:
-            data_plus_checksum = ser.read(21)
-            if len(data_plus_checksum) != 21:
+            data_plus_checksum = read_exact_bytes(
+                ser, 21, timeout_ms=100, debug=debug)
+            if data_plus_checksum is None:
                 packet_count['error'] += 1
                 return None
 
@@ -124,8 +155,9 @@ def parse_serial_data(ser):
 
         # Intensity data (0x49)
         elif header_byte == 0x49:
-            data_plus_checksum = ser.read(17)
-            if len(data_plus_checksum) != 17:
+            data_plus_checksum = read_exact_bytes(
+                ser, 17, timeout_ms=100, debug=debug)
+            if data_plus_checksum is None:
                 packet_count['error'] += 1
                 return None
 
@@ -148,10 +180,10 @@ def parse_serial_data(ser):
 
         # Filtered data (0x46)
         elif header_byte == 0x46:
-            data_plus_checksum = ser.read(21)
-            if len(data_plus_checksum) != 21:
+            data_plus_checksum = read_exact_bytes(
+                ser, 21, timeout_ms=100, debug=debug)
+            if data_plus_checksum is None:
                 packet_count['error'] += 1
-                # 診斷: 顯示實際讀取的長度
                 return None
 
             data = data_plus_checksum[:20]
@@ -267,7 +299,7 @@ def collecting_thread(ser_ref, conn, port_name):
     last_ntp_warning = 0
     ntp_warning_interval = 5.0
 
-    print("[收集線程] 已啟動 (延遲寫入: 500ms)\n")
+    print("[收集線程] 已啟動\n")
 
     while collecting_active.is_set():
         try:
@@ -370,7 +402,22 @@ def collecting_thread(ser_ref, conn, port_name):
 
             time.sleep(2.0)
             try:
-                ser_ref['ser'] = serial.Serial(port_name, BAUD_RATE, timeout=1)
+                # 重連時也使用被動模式
+                s = serial.Serial()
+                s.port = port_name
+                s.baudrate = BAUD_RATE
+                s.timeout = 0.05
+                s.xonxoff = False
+                s.rtscts = False
+                s.dsrdtr = False
+                s.dtr = False
+                s.rts = False
+                s.open()
+
+                time.sleep(0.1)
+                s.reset_input_buffer()
+                s.reset_output_buffer()
+                ser_ref['ser'] = s
                 print(f"[重連成功] {port_name}")
                 last_data_time = time.time()
             except serial.SerialException as re:
@@ -379,7 +426,7 @@ def collecting_thread(ser_ref, conn, port_name):
 
         # 定期統計
         current_time = time.time()
-        if current_time - last_report_time >= 600 or last_report_time == 0:
+        if current_time - last_report_time >= 60 or last_report_time == 0:
             elapsed = current_time - start_time
             sensor_rate = packet_count['sensor'] / \
                 elapsed if elapsed > 0 else 0
@@ -423,8 +470,23 @@ def main():
         sys.exit(0)
 
     try:
-        ser = serial.Serial(selected_port, BAUD_RATE, timeout=1)
-        print(f"\n✓ 已連接: {selected_port} @ {BAUD_RATE} baud\n")
+        # 正確做法: 先配置再打開,避免 DTR/RTS 觸發重啟
+        ser = serial.Serial()
+        ser.port = selected_port
+        ser.baudrate = BAUD_RATE
+        ser.timeout = 0.05
+        ser.xonxoff = False
+        ser.rtscts = False
+        ser.dsrdtr = False
+        ser.dtr = False  # 在打開前設定為 False
+        ser.rts = False
+        ser.open()
+
+        time.sleep(0.1)
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+
+        print(f"\n✓ 已連接: {selected_port} @ {BAUD_RATE} baud")
     except serial.SerialException as e:
         print(f"\n✗ 錯誤: {e}")
         conn.close()
