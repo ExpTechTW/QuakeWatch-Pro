@@ -104,7 +104,7 @@ def read_exact_bytes(ser, num_bytes, timeout_ms=100):
     return bytes(data)
 
 
-def parse_serial_data(ser, debug=False):
+def parse_serial_data(ser):
     """
     解析串列埠資料
     0x53 = Sensor (原始三軸)
@@ -112,8 +112,7 @@ def parse_serial_data(ser, debug=False):
     0x46 = Filtered (濾波三軸)
     """
     try:
-        # 等待 header byte
-        header = read_exact_bytes(ser, 1, timeout_ms=50, debug=debug)
+        header = read_exact_bytes(ser, 1, timeout_ms=50)
         if header is None:
             return None
 
@@ -121,19 +120,11 @@ def parse_serial_data(ser, debug=False):
 
         if header_byte not in [0x53, 0x49, 0x46]:
             packet_count['error'] += 1
-            if debug and packet_count['error'] <= 20:
-                # 檢查是否為 ASCII 文字 (ESP32 debug 訊息)
-                if 0x20 <= header_byte <= 0x7E:
-                    print(
-                        f"[DEBUG] 無效 header: 0x{header_byte:02X} ('{chr(header_byte)}')")
-                else:
-                    print(f"[DEBUG] 無效 header: 0x{header_byte:02X}")
             return None
 
         # Sensor data (0x53)
         if header_byte == 0x53:
-            data_plus_checksum = read_exact_bytes(
-                ser, 21, timeout_ms=100, debug=debug)
+            data_plus_checksum = read_exact_bytes(ser, 21, timeout_ms=100)
             if data_plus_checksum is None:
                 packet_count['error'] += 1
                 return None
@@ -155,8 +146,7 @@ def parse_serial_data(ser, debug=False):
 
         # Intensity data (0x49)
         elif header_byte == 0x49:
-            data_plus_checksum = read_exact_bytes(
-                ser, 17, timeout_ms=100, debug=debug)
+            data_plus_checksum = read_exact_bytes(ser, 17, timeout_ms=100)
             if data_plus_checksum is None:
                 packet_count['error'] += 1
                 return None
@@ -180,8 +170,7 @@ def parse_serial_data(ser, debug=False):
 
         # Filtered data (0x46)
         elif header_byte == 0x46:
-            data_plus_checksum = read_exact_bytes(
-                ser, 21, timeout_ms=100, debug=debug)
+            data_plus_checksum = read_exact_bytes(ser, 21, timeout_ms=100)
             if data_plus_checksum is None:
                 packet_count['error'] += 1
                 return None
@@ -458,7 +447,7 @@ def signal_handler(sig, frame):
 
 
 def main():
-    print("QuakeWatch - ES-Net Serial Data Collector (診斷版)")
+    print("QuakeWatch - ES-Net Serial Data Collector")
     print("="*60)
 
     conn = init_database()
