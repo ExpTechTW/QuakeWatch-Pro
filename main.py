@@ -31,7 +31,7 @@ elif sys.platform == 'darwin':
 
 WEBSOCKET_URL = 'ws://localhost:8765'
 TZ_UTC_8 = timezone(timedelta(hours=8))
-DATA_WINDOW_LENGTH = 10
+DATA_WINDOW_LENGTH = 60
 MAX_SAMPLES_SENSOR = int(DATA_WINDOW_LENGTH * 50 * 1.2)
 MAX_SAMPLES_INTENSITY = int(DATA_WINDOW_LENGTH * 2 * 1.2)
 
@@ -68,6 +68,10 @@ parse_stats = {
     'last_report_time': time.time(),
     'last_report_count': 0
 }
+
+# WebSocket 連線
+websocket_connection = None
+query_responses = {}  # 存儲查詢回應 {request_id: response}
 
 FFT_SIZE = 1024
 FFT_FS = 50
@@ -151,9 +155,45 @@ def clean_old_data():
                 filtered_timestamp.popleft()
 
 
+async def execute_query(query, params=(), timeout=10.0):
+    """執行 SQL 查詢並等待回應"""
+    global websocket_connection
+
+    if websocket_connection is None:
+        raise Exception("WebSocket 未連線")
+
+    request_id = f"{time.time()}_{id(query)}"
+    request = {
+        'type': 'query',
+        'id': request_id,
+        'query': query,
+        'params': list(params) if params else []
+    }
+
+    try:
+        await websocket_connection.send(json.dumps(request))
+    except Exception as e:
+        raise Exception(f"發送查詢失敗: {e}")
+
+    # 等待回應
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if request_id in query_responses:
+            response = query_responses.pop(request_id)
+            if response['success']:
+                return response['data']
+            else:
+                raise Exception(f"查詢錯誤: {response['error']}")
+        await asyncio.sleep(0.01)
+
+    # 清理未回應的請求
+    query_responses.pop(request_id, None)
+    raise Exception(f"查詢超時 (>{timeout}秒)")
+
+
 async def websocket_receiver():
     """WebSocket 接收線程 - 從 data_collector 接收數據"""
-    global first_timestamp, first_received_time
+    global first_timestamp, first_received_time, websocket_connection
 
     first_received_time = None
 
@@ -162,102 +202,184 @@ async def websocket_receiver():
     while parsing_active.is_set():
         try:
             async with connect(WEBSOCKET_URL) as websocket:
+                websocket_connection = websocket
                 print(f"[WebSocket] 已連線\n")
 
-                while parsing_active.is_set():
+                # 定期查詢最新資料
+                last_query_time = 0
+                query_interval = 0.2  # 每 200ms 查詢一次
+                last_rx_sensor = None
+                last_rx_filtered = None
+                last_rx_intensity = None
+
+                print("[WebSocket] 開始定期查詢資料...\n")
+
+                # 創建一個持續接收訊息的任務
+                async def message_receiver():
+                    """持續接收 WebSocket 訊息"""
                     try:
-                        message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
-                        data = json.loads(message)
-                        data_type = data['type']
-                        items = data['data']
+                        async for message in websocket:
+                            data = json.loads(message)
+                            if data.get('type') == 'query_response':
+                                request_id = data['id']
+                                query_responses[request_id] = data
+                    except Exception:
+                        pass
 
-                        received_time = time.time()
-                        if first_received_time is None:
-                            first_received_time = received_time
+                # 創建接收任務
+                receiver_task = asyncio.create_task(message_receiver())
 
-                        with data_lock:
-                            if data_type == 'sensor':
-                                for item in items:
-                                    timestamp, x, y, z = item
+                try:
+                    while parsing_active.is_set():
+                        current_time = time.time()
 
-                                    if timestamp >= 1000000000000:
-                                        if first_timestamp is None or timestamp < first_timestamp:
-                                            first_timestamp = timestamp
+                        # 定期查詢
+                        if current_time - last_query_time >= query_interval:
+                            try:
+                                cutoff_time = current_time - 60
 
-                                    x_data.append(x)
-                                    y_data.append(y)
-                                    z_data.append(z)
+                                # 查詢 sensor 資料
+                                if last_rx_sensor is None:
+                                    sensor_rows = await execute_query(
+                                        'SELECT timestamp_ms, x, y, z, received_time FROM sensor_data WHERE received_time > ? ORDER BY timestamp_ms ASC LIMIT 500',
+                                        (cutoff_time,), timeout=2.0
+                                    )
+                                else:
+                                    sensor_rows = await execute_query(
+                                        'SELECT timestamp_ms, x, y, z, received_time FROM sensor_data WHERE received_time > ? ORDER BY timestamp_ms ASC LIMIT 500',
+                                        (last_rx_sensor,), timeout=2.0
+                                    )
+                                if sensor_rows and len(sensor_rows) > 0:
+                                    with data_lock:
+                                        for row in sensor_rows:
+                                            timestamp, x, y, z, received_time = row
+                                            last_rx_sensor = received_time
 
-                                    pga_value = np.sqrt(x**2 + y**2 + z**2)
-                                    pga_raw.append(pga_value)
+                                            if first_received_time is None:
+                                                first_received_time = received_time
 
-                                    if timestamp >= 1000000000000 and first_timestamp is not None:
-                                        adjusted_time = (
-                                            timestamp - first_timestamp) / 1000.0
-                                    else:
-                                        adjusted_time = received_time - first_received_time
+                                            if timestamp >= 1000000000000:
+                                                if first_timestamp is None or timestamp < first_timestamp:
+                                                    first_timestamp = timestamp
 
-                                    time_data.append(adjusted_time)
-                                    timestamp_data.append(timestamp)
-                                    parse_stats['total_parsed'] += 1
+                                            x_data.append(x)
+                                            y_data.append(y)
+                                            z_data.append(z)
+                                            pga_value = np.sqrt(x**2 + y**2 + z**2)
+                                            pga_raw.append(pga_value)
 
-                            elif data_type == 'filtered':
-                                for item in items:
-                                    timestamp, h1, h2, v = item
+                                            if timestamp >= 1000000000000 and first_timestamp is not None:
+                                                adjusted_time = (timestamp - first_timestamp) / 1000.0
+                                            else:
+                                                adjusted_time = received_time - first_received_time
 
-                                    if timestamp >= 1000000000000:
-                                        if first_timestamp is None or timestamp < first_timestamp:
-                                            first_timestamp = timestamp
+                                            time_data.append(adjusted_time)
+                                            timestamp_data.append(timestamp)
+                                            parse_stats['total_parsed'] += 1
 
-                                    h1_data.append(h1)
-                                    h2_data.append(h2)
-                                    v_data.append(v)
+                                # 查詢 filtered 資料
+                                if last_rx_filtered is None:
+                                    filtered_rows = await execute_query(
+                                        'SELECT timestamp_ms, h1, h2, v, received_time FROM filtered_data WHERE received_time > ? ORDER BY timestamp_ms ASC LIMIT 500',
+                                        (cutoff_time,), timeout=2.0
+                                    )
+                                else:
+                                    filtered_rows = await execute_query(
+                                        'SELECT timestamp_ms, h1, h2, v, received_time FROM filtered_data WHERE received_time > ? ORDER BY timestamp_ms ASC LIMIT 500',
+                                        (last_rx_filtered,), timeout=2.0
+                                    )
 
-                                    if timestamp >= 1000000000000 and first_timestamp is not None:
-                                        adjusted_time_filt = (
-                                            timestamp - first_timestamp) / 1000.0
-                                    else:
-                                        adjusted_time_filt = received_time - first_received_time
+                                if filtered_rows and len(filtered_rows) > 0:
+                                    with data_lock:
+                                        for row in filtered_rows:
+                                            timestamp, h1, h2, v, received_time = row
+                                            last_rx_filtered = received_time
 
-                                    filtered_time.append(adjusted_time_filt)
-                                    filtered_timestamp.append(timestamp)
-                                    parse_stats['total_parsed'] += 1
+                                            if first_received_time is None:
+                                                first_received_time = received_time
 
-                            elif data_type == 'intensity':
-                                for item in items:
-                                    timestamp, intensity, a = item
+                                            if timestamp >= 1000000000000:
+                                                if first_timestamp is None or timestamp < first_timestamp:
+                                                    first_timestamp = timestamp
 
-                                    if timestamp >= 1000000000000:
-                                        if first_timestamp is None or timestamp < first_timestamp:
-                                            first_timestamp = timestamp
+                                            h1_data.append(h1)
+                                            h2_data.append(h2)
+                                            v_data.append(v)
 
-                                    intensity_history.append(intensity)
-                                    a_history.append(a)
+                                            if timestamp >= 1000000000000 and first_timestamp is not None:
+                                                adjusted_time_filt = (timestamp - first_timestamp) / 1000.0
+                                            else:
+                                                adjusted_time_filt = received_time - first_received_time
 
-                                    if timestamp >= 1000000000000 and first_timestamp is not None:
-                                        adjusted_time_int = (
-                                            timestamp - first_timestamp) / 1000.0
-                                    else:
-                                        adjusted_time_int = received_time - first_received_time
+                                            filtered_time.append(adjusted_time_filt)
+                                            filtered_timestamp.append(timestamp)
+                                            parse_stats['total_parsed'] += 1
 
-                                    intensity_time.append(adjusted_time_int)
-                                    intensity_timestamp.append(timestamp)
-                                    parse_stats['total_parsed'] += 1
+                                # 查詢 intensity 資料
+                                if last_rx_intensity is None:
+                                    intensity_rows = await execute_query(
+                                        'SELECT timestamp_ms, intensity, a, received_time FROM intensity_data WHERE received_time > ? ORDER BY received_time ASC LIMIT 500',
+                                        (cutoff_time,), timeout=2.0
+                                    )
+                                else:
+                                    intensity_rows = await execute_query(
+                                        'SELECT timestamp_ms, intensity, a, received_time FROM intensity_data WHERE received_time > ? ORDER BY received_time ASC LIMIT 500',
+                                        (last_rx_intensity,), timeout=2.0
+                                    )
 
-                    except asyncio.TimeoutError:
-                        continue
-                    except Exception as e:
-                        print(f"[WebSocket] 接收錯誤: {e}")
-                        break
+                                if intensity_rows and len(intensity_rows) > 0:
+                                    with data_lock:
+                                        for row in intensity_rows:
+                                            timestamp, intensity, a, received_time = row
+                                            last_rx_intensity = received_time
+
+                                            if first_received_time is None:
+                                                first_received_time = received_time
+
+                                            if timestamp >= 1000000000000:
+                                                if first_timestamp is None or timestamp < first_timestamp:
+                                                    first_timestamp = timestamp
+
+                                            intensity_history.append(intensity)
+                                            a_history.append(a)
+
+                                            if timestamp >= 1000000000000 and first_timestamp is not None:
+                                                adjusted_time_int = (timestamp - first_timestamp) / 1000.0
+                                            else:
+                                                adjusted_time_int = received_time - first_received_time
+
+                                            intensity_time.append(adjusted_time_int)
+                                            intensity_timestamp.append(timestamp)
+                                            parse_stats['total_parsed'] += 1
+
+                                last_query_time = current_time
+
+                            except Exception as e:
+                                # 查詢失敗不中斷,繼續下次查詢
+                                print(f"[警告] 查詢失敗: {e}")
+                                pass
+
+                        # 短暫睡眠避免 CPU 100%
+                        await asyncio.sleep(0.01)
+
+                finally:
+                    # 取消接收任務
+                    receiver_task.cancel()
+                    try:
+                        await receiver_task
+                    except asyncio.CancelledError:
+                        pass
 
         except Exception as e:
             print(f"[WebSocket] 連線失敗: {e}")
+            websocket_connection = None
             if parsing_active.is_set():
                 print("[WebSocket] 5秒後重新連線...")
                 await asyncio.sleep(5)
             else:
                 break
 
+    websocket_connection = None
     print("[WebSocket] 已停止")
 
 

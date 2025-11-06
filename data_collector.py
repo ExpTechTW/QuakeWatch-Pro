@@ -31,6 +31,9 @@ TZ_UTC_8 = timezone(timedelta(hours=8))
 # WebSocket 客戶端連線集合
 websocket_clients = set()
 
+# 全域資料庫連線
+db_conn = None
+
 
 def get_timestamp_utc8():
     """獲取 UTC+8 時間戳(毫秒)"""
@@ -40,13 +43,63 @@ def get_timestamp_utc8():
 
 
 async def websocket_handler(websocket):
-    """WebSocket 連線處理"""
+    """WebSocket 連線處理 - 支援雙向通訊"""
     websocket_clients.add(websocket)
     print(f"[WebSocket] 新客戶端連線 (總數: {len(websocket_clients)})")
     try:
-        await websocket.wait_closed()
+        async for message in websocket:
+            try:
+                request = json.loads(message)
+                request_type = request.get('type')
+
+                if request_type == 'query':
+                    # 處理 SQL 查詢請求
+                    query = request.get('query')
+                    params = request.get('params', [])
+                    request_id = request.get('id')
+
+                    # 轉換 params 為 tuple
+                    if isinstance(params, list):
+                        params = tuple(params)
+
+                    try:
+                        if db_conn is None:
+                            raise Exception("資料庫未初始化")
+
+                        cursor = db_conn.cursor()
+                        cursor.execute(query, params)
+                        results = cursor.fetchall()
+
+                        # 確保結果是可序列化的
+                        if results is None:
+                            results = []
+
+                        response = {
+                            'type': 'query_response',
+                            'id': request_id,
+                            'success': True,
+                            'data': results
+                        }
+
+                    except Exception as e:
+                        response = {
+                            'type': 'query_response',
+                            'id': request_id,
+                            'success': False,
+                            'error': str(e)
+                        }
+
+                    try:
+                        await websocket.send(json.dumps(response))
+                    except Exception as e:
+                        print(f"[WebSocket] 發送回應失敗: {e}")
+
+            except json.JSONDecodeError as e:
+                print(f"[WebSocket] JSON 解析錯誤: {e}")
+            except Exception as e:
+                print(f"[WebSocket] 處理訊息錯誤: {e}")
     finally:
-        websocket_clients.remove(websocket)
+        websocket_clients.discard(websocket)
         print(f"[WebSocket] 客戶端斷線 (總數: {len(websocket_clients)})")
 
 
@@ -318,7 +371,7 @@ def select_serial_port():
             return None
 
 
-def collecting_thread(ser_ref, conn, port_name, loop):
+def collecting_thread(ser_ref, conn, port_name):
     """資料收集線程"""
     start_time = time.time()
     last_report_time = 0
@@ -408,23 +461,6 @@ def collecting_thread(ser_ref, conn, port_name, loop):
                     conn, 'filtered', filtered_to_write)
                 wrote_intensity = write_to_database(
                     conn, 'intensity', intensity_to_write)
-
-                # 廣播資料到 WebSocket 客戶端
-                if sensor_to_write:
-                    asyncio.run_coroutine_threadsafe(
-                        broadcast_data('sensor', [[d[1], d[2], d[3], d[4]] for d in sensor_to_write]),
-                        loop
-                    )
-                if filtered_to_write:
-                    asyncio.run_coroutine_threadsafe(
-                        broadcast_data('filtered', [[d[1], d[2], d[3], d[4]] for d in filtered_to_write]),
-                        loop
-                    )
-                if intensity_to_write:
-                    asyncio.run_coroutine_threadsafe(
-                        broadcast_data('intensity', [[d[1], d[2], d[3]] for d in intensity_to_write]),
-                        loop
-                    )
 
                 # 保留未寫入的數據（保留在緩衝區中等待後續排序）
                 sensor_buffer = [
@@ -523,10 +559,13 @@ async def start_websocket_server():
 
 
 def main():
+    global db_conn
+
     print("QuakeWatch - ES-Net Serial Data Collector")
     print("="*60)
 
-    conn = init_database()
+    db_conn = init_database()
+    conn = db_conn
 
     selected_port = select_serial_port()
     if not selected_port:
@@ -561,11 +600,9 @@ def main():
 
     signal.signal(signal.SIGINT, signal_handler)
 
-    # 建立 asyncio event loop
-    loop = asyncio.new_event_loop()
-
     # 在背景執行 WebSocket 伺服器
     def run_asyncio_loop():
+        loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(start_websocket_server())
 
@@ -574,7 +611,7 @@ def main():
 
     ser_ref = {'ser': ser}
     collector = Thread(target=collecting_thread, args=(
-        ser_ref, conn, selected_port, loop), daemon=True)
+        ser_ref, conn, selected_port), daemon=True)
     collector.start()
 
     print("開始收集數據... (按 Ctrl+C 停止)")
@@ -593,7 +630,6 @@ def main():
     except:
         pass
     conn.close()
-    loop.stop()
 
     print("\n" + "="*60)
     print(f"原始三軸封包: {packet_count['sensor']}")
