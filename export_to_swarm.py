@@ -99,9 +99,9 @@ def export_to_miniseed(sensor_rows, output_file='seismic_data.mseed'):
 
     # 三個分量
     components = [
-        ('EHZ', x_data),  # E-W (East-West) - X 軸
+        ('EHE', x_data),  # E-W (East-West) - X 軸
         ('EHN', y_data),  # N-S (North-South) - Y 軸
-        ('EHE', z_data)   # Vertical - Z 軸
+        ('EHZ', z_data)   # Vertical - Z 軸
     ]
 
     for channel, data in components:
