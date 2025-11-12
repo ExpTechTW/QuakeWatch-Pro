@@ -265,11 +265,13 @@ async def websocket_receiver():
                                             x_data.append(x)
                                             y_data.append(y)
                                             z_data.append(z)
-                                            pga_value = np.sqrt(x**2 + y**2 + z**2)
+                                            pga_value = np.sqrt(
+                                                x**2 + y**2 + z**2)
                                             pga_raw.append(pga_value)
 
                                             if timestamp >= 1000000000000 and first_timestamp is not None:
-                                                adjusted_time = (timestamp - first_timestamp) / 1000.0
+                                                adjusted_time = (
+                                                    timestamp - first_timestamp) / 1000.0
                                             else:
                                                 adjusted_time = received_time - first_received_time
 
@@ -307,12 +309,15 @@ async def websocket_receiver():
                                             v_data.append(v)
 
                                             if timestamp >= 1000000000000 and first_timestamp is not None:
-                                                adjusted_time_filt = (timestamp - first_timestamp) / 1000.0
+                                                adjusted_time_filt = (
+                                                    timestamp - first_timestamp) / 1000.0
                                             else:
                                                 adjusted_time_filt = received_time - first_received_time
 
-                                            filtered_time.append(adjusted_time_filt)
-                                            filtered_timestamp.append(timestamp)
+                                            filtered_time.append(
+                                                adjusted_time_filt)
+                                            filtered_timestamp.append(
+                                                timestamp)
                                             parse_stats['total_parsed'] += 1
 
                                 # 查詢 intensity 資料
@@ -344,12 +349,15 @@ async def websocket_receiver():
                                             a_history.append(a)
 
                                             if timestamp >= 1000000000000 and first_timestamp is not None:
-                                                adjusted_time_int = (timestamp - first_timestamp) / 1000.0
+                                                adjusted_time_int = (
+                                                    timestamp - first_timestamp) / 1000.0
                                             else:
                                                 adjusted_time_int = received_time - first_received_time
 
-                                            intensity_time.append(adjusted_time_int)
-                                            intensity_timestamp.append(timestamp)
+                                            intensity_time.append(
+                                                adjusted_time_int)
+                                            intensity_timestamp.append(
+                                                timestamp)
                                             parse_stats['total_parsed'] += 1
 
                                 last_query_time = current_time
@@ -489,10 +497,10 @@ def update_plot(frame):
 
             _last_fft_update_time = current_time
 
-        # 更新聲譜圖 - 使用濾波後的 X 軸數據（h1）
-        if should_update_fft and len(h1_data) >= SPEC_NPERSEG:
-            # 使用濾波後的 X 軸數據
-            h1_for_spec = np.array(list(h1_data), dtype=np.float32)
+        # 更新聲譜圖 - 使用濾波後的 Z 軸數據（v）
+        if should_update_fft and len(v_data) >= SPEC_NPERSEG:
+            # 使用濾波後的 Z 軸數據
+            v_for_spec = np.array(list(v_data), dtype=np.float32)
             filtered_time_list = list(filtered_time)
             spec_x_min = filtered_time_list[0] if len(
                 filtered_time_list) > 0 else 0
@@ -501,7 +509,7 @@ def update_plot(frame):
 
             # 計算 STFT
             freqs, times, Sxx = signal.spectrogram(
-                h1_for_spec,
+                v_for_spec,
                 fs=FFT_FS,
                 nperseg=SPEC_NPERSEG,
                 noverlap=SPEC_NOVERLAP,
@@ -744,7 +752,7 @@ def main():
 
     # 聲譜圖設定
     ax7.set_facecolor('#161b22')
-    ax7.set_title('聲譜圖 (Spectrogram) - X軸濾波', fontsize=14,
+    ax7.set_title('聲譜圖 (Spectrogram) - Z軸濾波', fontsize=14,
                   fontweight='bold', color='#58a6ff', pad=12)
     ax7.set_xlabel('時間 (秒)', fontsize=11)
     ax7.set_ylabel('頻率 (Hz)', fontsize=11)
