@@ -11,11 +11,11 @@ from datetime import datetime, timezone
 from obspy import Trace, Stream, UTCDateTime
 
 # 資料庫檔案
-DB_FILE = 'earthquake_data_202511101300.db'
+DB_FILE = 'earthquake_data.db'
 
 # ========== 時間範圍設定 ==========
-START_TIME = 60        # 開始時間（秒，相對於第一筆資料）
-DURATION = 80          # 持續時間（秒），None = 匯出所有資料
+START_TIME = 0        # 開始時間（秒，相對於第一筆資料）
+DURATION = 500        # 持續時間（秒），None = 匯出所有資料
 # =================================
 
 # 輸出檔案前綴
