@@ -3,3 +3,4 @@ earthquake_data.db
 *.SAC
 *.txt
 *.mseed
+.DS_Store
