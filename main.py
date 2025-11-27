@@ -85,7 +85,7 @@ N_HALF_PLUS_ONE = FFT_N // 2 + 1
 SPEC_NPERSEG = 50           # FFT 窗口大小：128 樣本 = 2.56 秒
 SPEC_NOVERLAP = 50*0.85     # 重疊樣本數：85/128 = 66.4% 重疊，時間步進 = 0.86 秒
 SPEC_FREQ_MIN = 1           # Hz 顯示的最小頻率
-SPEC_FREQ_MAX = 10          # Hz 顯示的最大頻率（0-10 Hz）
+SPEC_FREQ_MAX = 25          # Hz 顯示的最大頻率（0-10 Hz）
 SPEC_POWER_MIN = -40        # dB 色標最小值
 SPEC_POWER_MAX = 0          # dB 色標最大值
 # 如果太藍：調小 SPEC_POWER_MIN（例如 -50）
@@ -498,9 +498,9 @@ def update_plot(frame):
             _last_fft_update_time = current_time
 
         # 更新聲譜圖 - 使用濾波後的 Z 軸數據（v）
-        if should_update_fft and len(v_data) >= SPEC_NPERSEG:
+        if should_update_fft and len(z_data) >= SPEC_NPERSEG:
             # 使用濾波後的 Z 軸數據
-            v_for_spec = np.array(list(v_data), dtype=np.float32)
+            v_for_spec = np.array(list(z_data), dtype=np.float32)
             filtered_time_list = list(filtered_time)
             spec_x_min = filtered_time_list[0] if len(
                 filtered_time_list) > 0 else 0
