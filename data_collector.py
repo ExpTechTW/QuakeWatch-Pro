@@ -382,6 +382,7 @@ def collecting_thread(ser_ref, conn, port_name):
     # 緩衝區設定 - 使用延遲寫入策略
     BUFFER_DELAY_MS = 500  # 只寫入 500ms 前的數據,確保晚到的數據能排序
     WRITE_INTERVAL = 0.5
+    BATCH_TIME_INTERVAL = round(1000/6, 1)
     sensor_buffer = []
     filtered_buffer = []
     intensity_buffer = []
@@ -389,6 +390,8 @@ def collecting_thread(ser_ref, conn, port_name):
     # NTP 警告設定
     last_ntp_warning = 0
     ntp_warning_interval = 5.0
+    
+    last_timestamp = get_timestamp_utc8()
 
     print("[收集線程] 已啟動\n")
 
@@ -399,7 +402,6 @@ def collecting_thread(ser_ref, conn, port_name):
                 raise serial.SerialException("串列埠已關閉")
 
             # 批次處理封包
-            timestamp_start = get_timestamp_utc8()
             batch_results = []
 
             for _ in range(20):
@@ -413,18 +415,25 @@ def collecting_thread(ser_ref, conn, port_name):
             # 計算時間間隔並分配時間戳
             current_time = time.time()
             if batch_results:
-                timestamp_end = get_timestamp_utc8()
+                this_timestamp = get_timestamp_utc8()
+                
+                if abs(this_timestamp - last_timestamp) >= 1000:
+                    last_timestamp = this_timestamp
+                    
+                last_timestamp += BATCH_TIME_INTERVAL
+                # timestamp_end = get_timestamp_utc8()
                 batch_count = len(batch_results)
-                time_interval = (timestamp_end - timestamp_start) / \
-                    batch_count if batch_count > 1 else 0
+                # time_interval = ((this_timestamp - last_timestamp) / \
+                #     batch_count if batch_count > 1 else 0)
+                time_interval = BATCH_TIME_INTERVAL / batch_count if batch_count > 1 else 0
 
                 has_no_ntp = False
                 for i, result in enumerate(batch_results):
                     # 如果 timestamp 為 0，使用平分的時間
                     if result[1] == 0:
                         has_no_ntp = True
-                        calculated_timestamp = timestamp_start + \
-                            int(i * time_interval)
+                        calculated_timestamp = last_timestamp - \
+                            int((batch_count-i) * time_interval)
                         result = (result[0], calculated_timestamp, *result[2:])
 
                     # 分類存入緩衝區
