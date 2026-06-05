@@ -13,6 +13,8 @@ import sqlite3
 import signal
 import json
 import asyncio
+from functools import reduce
+from operator import xor
 from datetime import datetime, timezone, timedelta
 from threading import Thread, Event
 from websockets.server import serve
@@ -36,10 +38,8 @@ db_conn = None
 
 
 def get_timestamp_utc8():
-    """獲取 UTC+8 時間戳(毫秒)"""
-    now_utc8 = datetime.now(TZ_UTC_8)
-    epoch = datetime(1970, 1, 1, tzinfo=TZ_UTC_8)
-    return int((now_utc8 - epoch).total_seconds() * 1000)
+    """UTC+8 牆鐘時間的毫秒時間戳（等價於 Unix 毫秒 + 8 小時）"""
+    return int((time.time() + 8 * 3600) * 1000)
 
 
 async def websocket_handler(websocket):
@@ -206,91 +206,44 @@ def read_exact_bytes(ser, num_bytes, timeout_ms=100):
     return bytes(data)
 
 
+# 封包規格: header -> (類型名稱, struct 格式, 資料位元組數)
+#   0x53 = Sensor (原始三軸), 0x49 = Intensity (震度), 0x46 = Filtered (濾波三軸)
+PACKET_SPECS = {
+    0x53: ('sensor', '<Qfff', 20),
+    0x49: ('intensity', '<Qff', 16),
+    0x46: ('filtered', '<Qfff', 20),
+}
+
+
 def parse_serial_data(ser):
-    """
-    解析串列埠資料
-    0x53 = Sensor (原始三軸)
-    0x49 = Intensity (震度)
-    0x46 = Filtered (濾波三軸)
-    """
+    """解析一個串列埠封包，回傳 (類型, timestamp, *values) 或 None"""
     try:
         header = read_exact_bytes(ser, 1, timeout_ms=50)
         if header is None:
             return None
 
         header_byte = header[0]
-
-        if header_byte not in [0x53, 0x49, 0x46]:
+        spec = PACKET_SPECS.get(header_byte)
+        if spec is None:
             packet_count['error'] += 1
             return None
 
-        # Sensor data (0x53)
-        if header_byte == 0x53:
-            data_plus_checksum = read_exact_bytes(ser, 21, timeout_ms=100)
-            if data_plus_checksum is None:
-                packet_count['error'] += 1
-                return None
+        name, fmt, nbytes = spec
+        buf = read_exact_bytes(ser, nbytes + 1, timeout_ms=100)
+        if buf is None:
+            packet_count['error'] += 1
+            return None
 
-            data = data_plus_checksum[:20]
-            checksum = data_plus_checksum[20]
+        # XOR 校驗: header ^ data ^ checksum 應為 0
+        if reduce(xor, buf, header_byte) != 0:
+            packet_count['error'] += 1
+            return None
 
-            calculated_xor = header_byte ^ checksum
-            for byte in data:
-                calculated_xor ^= byte
-
-            if calculated_xor != 0:
-                packet_count['error'] += 1
-                return None
-
-            timestamp, x, y, z = struct.unpack('<Qfff', data)
-            packet_count['sensor'] += 1
-            return ('sensor', timestamp, x, y, z)
-
-        # Intensity data (0x49)
-        elif header_byte == 0x49:
-            data_plus_checksum = read_exact_bytes(ser, 17, timeout_ms=100)
-            if data_plus_checksum is None:
-                packet_count['error'] += 1
-                return None
-
-            data = data_plus_checksum[:16]
-            checksum = data_plus_checksum[16]
-
-            calculated_xor = header_byte ^ checksum
-            for byte in data:
-                calculated_xor ^= byte
-
-            if calculated_xor != 0:
-                packet_count['error'] += 1
-                return None
-
-            timestamp, intensity, a = struct.unpack('<Qff', data)
-            if timestamp == 0:
-                timestamp = get_timestamp_utc8()
-            packet_count['intensity'] += 1
-            return ('intensity', timestamp, intensity, a)
-
-        # Filtered data (0x46)
-        elif header_byte == 0x46:
-            data_plus_checksum = read_exact_bytes(ser, 21, timeout_ms=100)
-            if data_plus_checksum is None:
-                packet_count['error'] += 1
-                return None
-
-            data = data_plus_checksum[:20]
-            checksum = data_plus_checksum[20]
-
-            calculated_xor = header_byte ^ checksum
-            for byte in data:
-                calculated_xor ^= byte
-
-            if calculated_xor != 0:
-                packet_count['error'] += 1
-                return None
-
-            timestamp, x, y, z = struct.unpack('<Qfff', data)
-            packet_count['filtered'] += 1
-            return ('filtered', timestamp, x, y, z)
+        timestamp, *values = struct.unpack(fmt, buf[:nbytes])
+        if name == 'intensity' and timestamp == 0:
+            timestamp = get_timestamp_utc8()
+        packet_count[name] += 1
+        return (name, timestamp, *values)
 
     except Exception as e:
         packet_count['error'] += 1
@@ -371,6 +324,26 @@ def select_serial_port():
             return None
 
 
+def open_serial(port_name):
+    """開啟串列埠（Windows 使用防自動重啟配置）"""
+    if os.name == 'nt':
+        ser = serial.Serial()
+        ser.port = port_name
+        ser.baudrate = BAUD_RATE
+        ser.timeout = 0.05
+        ser.xonxoff = False
+        ser.rtscts = False
+        ser.dsrdtr = False
+        ser.dtr = False  # 在打開前設定為 False
+        ser.rts = False
+        ser.open()
+        time.sleep(0.1)
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+        return ser
+    return serial.Serial(port_name, BAUD_RATE, timeout=1)
+
+
 def collecting_thread(ser_ref, conn, port_name):
     """資料收集線程"""
     start_time = time.time()
@@ -382,9 +355,7 @@ def collecting_thread(ser_ref, conn, port_name):
     # 緩衝區設定 - 使用延遲寫入策略
     BUFFER_DELAY_MS = 500  # 只寫入 500ms 前的數據,確保晚到的數據能排序
     WRITE_INTERVAL = 0.5
-    sensor_buffer = []
-    filtered_buffer = []
-    intensity_buffer = []
+    buffers = {'sensor': [], 'filtered': [], 'intensity': []}
 
     # NTP 警告設定
     last_ntp_warning = 0
@@ -428,13 +399,7 @@ def collecting_thread(ser_ref, conn, port_name):
                         result = (result[0], calculated_timestamp, *result[2:])
 
                     # 分類存入緩衝區
-                    data_type = result[0]
-                    if data_type == 'sensor':
-                        sensor_buffer.append(result)
-                    elif data_type == 'filtered':
-                        filtered_buffer.append(result)
-                    elif data_type == 'intensity':
-                        intensity_buffer.append(result)
+                    buffers[result[0]].append(result)
 
                 # NTP 警告
                 if has_no_ntp and (current_time - last_ntp_warning >= ntp_warning_interval):
@@ -446,29 +411,12 @@ def collecting_thread(ser_ref, conn, port_name):
             cutoff_timestamp = current_timestamp - BUFFER_DELAY_MS
 
             if current_time - last_write_time >= WRITE_INTERVAL:
-                # 過濾出可以寫入的數據（時間戳小於 cutoff）
-                sensor_to_write = [
-                    d for d in sensor_buffer if d[1] < cutoff_timestamp]
-                filtered_to_write = [
-                    d for d in filtered_buffer if d[1] < cutoff_timestamp]
-                intensity_to_write = [
-                    d for d in intensity_buffer if d[1] < cutoff_timestamp]
-
-                # 寫入並移除已寫入的數據
-                wrote_sensor = write_to_database(
-                    conn, 'sensor', sensor_to_write)
-                wrote_filtered = write_to_database(
-                    conn, 'filtered', filtered_to_write)
-                wrote_intensity = write_to_database(
-                    conn, 'intensity', intensity_to_write)
-
-                # 保留未寫入的數據（保留在緩衝區中等待後續排序）
-                sensor_buffer = [
-                    d for d in sensor_buffer if d[1] >= cutoff_timestamp]
-                filtered_buffer = [
-                    d for d in filtered_buffer if d[1] >= cutoff_timestamp]
-                intensity_buffer = [
-                    d for d in intensity_buffer if d[1] >= cutoff_timestamp]
+                # 寫入足夠舊的數據，保留較新的等待後續排序
+                for dtype, buf in buffers.items():
+                    write_to_database(
+                        conn, dtype, [d for d in buf if d[1] < cutoff_timestamp])
+                    buffers[dtype] = [
+                        d for d in buf if d[1] >= cutoff_timestamp]
 
                 last_write_time = current_time
 
@@ -493,25 +441,7 @@ def collecting_thread(ser_ref, conn, port_name):
 
             time.sleep(2.0)
             try:
-                if os.name == 'nt':  # Windows - 使用防重啟配置
-                    s = serial.Serial()
-                    s.port = port_name
-                    s.baudrate = BAUD_RATE
-                    s.timeout = 0.05
-                    s.xonxoff = False
-                    s.rtscts = False
-                    s.dsrdtr = False
-                    s.dtr = False
-                    s.rts = False
-                    s.open()
-
-                    time.sleep(0.1)
-                    s.reset_input_buffer()
-                    s.reset_output_buffer()
-                    ser_ref['ser'] = s
-                else:  # macOS / Linux - 使用簡單配置
-                    ser_ref['ser'] = serial.Serial(port_name, BAUD_RATE, timeout=1)
-
+                ser_ref['ser'] = open_serial(port_name)
                 print(f"[重連成功] {port_name}")
                 last_data_time = time.time()
             except serial.SerialException as re:
@@ -538,9 +468,8 @@ def collecting_thread(ser_ref, conn, port_name):
             last_report_time = current_time
 
     # 寫入剩餘資料
-    write_to_database(conn, 'sensor', sensor_buffer)
-    write_to_database(conn, 'filtered', filtered_buffer)
-    write_to_database(conn, 'intensity', intensity_buffer)
+    for dtype, buf in buffers.items():
+        write_to_database(conn, dtype, buf)
 
     print("\n[收集線程] 已停止")
 
@@ -574,24 +503,7 @@ def main():
         sys.exit(0)
 
     try:
-        if os.name == 'nt':  # Windows - 使用防重啟配置
-            ser = serial.Serial()
-            ser.port = selected_port
-            ser.baudrate = BAUD_RATE
-            ser.timeout = 0.05
-            ser.xonxoff = False
-            ser.rtscts = False
-            ser.dsrdtr = False
-            ser.dtr = False  # 在打開前設定為 False
-            ser.rts = False
-            ser.open()
-
-            time.sleep(0.1)
-            ser.reset_input_buffer()
-            ser.reset_output_buffer()
-        else:  # macOS / Linux - 使用簡單配置
-            ser = serial.Serial(selected_port, BAUD_RATE, timeout=1)
-
+        ser = open_serial(selected_port)
         print(f"\n✓ 已連接: {selected_port} @ {BAUD_RATE} baud")
     except serial.SerialException as e:
         print(f"\n✗ 錯誤: {e}")

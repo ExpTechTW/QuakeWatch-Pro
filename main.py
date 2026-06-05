@@ -3,7 +3,7 @@ QuakeWatch - ES-Net Data Visualization
 地震 ESP32 資料視覺化 - 從 WebSocket 接收數據並顯示圖表
 """
 
-import sys
+import math
 import time
 import threading
 import json
@@ -16,18 +16,10 @@ from datetime import datetime, timezone, timedelta
 from scipy import signal
 from websockets.client import connect
 
-# 中文字體設定
-import matplotlib
-if sys.platform.startswith('win'):
-    # Windows 中文字體設定
-    matplotlib.rcParams['font.sans-serif'] = ['Microsoft JhengHei',
-                                              'Microsoft YaHei', 'SimHei']
-    matplotlib.rcParams['axes.unicode_minus'] = False
-elif sys.platform == 'darwin':
-    # macOS 中文字體設定
-    matplotlib.rcParams['font.sans-serif'] = ['PingFang SC', 'Arial Unicode MS',
-                                              'Hiragino Sans GB', 'STHeiti']
-    matplotlib.rcParams['axes.unicode_minus'] = False
+from quake_common import (setup_chinese_font, compute_psd_db,
+                          FFT_SIZE, FFT_FS, FFT_WINDOW, FFT_FREQS_POS)
+
+setup_chinese_font()
 
 WEBSOCKET_URL = 'ws://localhost:8765'
 TZ_UTC_8 = timezone(timedelta(hours=8))
@@ -73,14 +65,6 @@ parse_stats = {
 websocket_connection = None
 query_responses = {}  # 存儲查詢回應 {request_id: response}
 
-FFT_SIZE = 1024
-FFT_FS = 50
-FFT_N = FFT_SIZE
-FFT_FREQS_POS = np.fft.rfftfreq(FFT_N, d=1.0/FFT_FS)
-FFT_WINDOW = np.hanning(FFT_SIZE).astype(np.float32)
-FFT_PSD_SCALE = 1.0 / (FFT_FS * FFT_N)
-N_HALF_PLUS_ONE = FFT_N // 2 + 1
-
 # 聲譜圖參數
 SPEC_NPERSEG = 50           # FFT 窗口大小：128 樣本 = 2.56 秒
 SPEC_NOVERLAP = 50*0.85     # 重疊樣本數：85/128 = 66.4% 重疊，時間步進 = 0.86 秒
@@ -92,13 +76,17 @@ SPEC_POWER_MAX = 0          # dB 色標最大值
 # 如果太紅：調大 SPEC_POWER_MAX（例如 10）
 
 
-def compute_psd_db(fft_data):
-    """計算功率譜密度並轉換為 dB"""
-    dft = fft_data[:N_HALF_PLUS_ONE]
-    psd = FFT_PSD_SCALE * np.abs(dft)**2
-    psd[1:-1] *= 2
-    psd_db = 10 * np.log10(psd + 1e-20)
-    return np.clip(psd_db, -110, 0)
+def _trim_old(time_dq, others, cutoff):
+    """移除 time_dq 開頭早於 cutoff 的元素，並同步移除 others 中對應元素"""
+    n = 0
+    for t in time_dq:
+        if t >= cutoff:
+            break
+        n += 1
+    for _ in range(n):
+        time_dq.popleft()
+        for dq in others:
+            dq.popleft()
 
 
 def clean_old_data():
@@ -106,53 +94,48 @@ def clean_old_data():
     if len(time_data) == 0:
         return
 
-    current_rel_time = time_data[-1]
-    cutoff_time = current_rel_time - DATA_WINDOW_LENGTH
+    cutoff_time = time_data[-1] - DATA_WINDOW_LENGTH
+    _trim_old(time_data, (x_data, y_data, z_data, timestamp_data, pga_raw), cutoff_time)
+    _trim_old(intensity_time, (intensity_history, a_history, intensity_timestamp), cutoff_time)
+    _trim_old(filtered_time, (h1_data, h2_data, v_data, filtered_timestamp), cutoff_time)
 
-    if len(time_data) > 0:
-        remove_count = 0
-        for t in time_data:
-            if t >= cutoff_time:
-                break
-            remove_count += 1
 
-        if remove_count > 0:
-            for _ in range(remove_count):
-                time_data.popleft()
-                x_data.popleft()
-                y_data.popleft()
-                z_data.popleft()
-                timestamp_data.popleft()
-                pga_raw.popleft()
+# 各資料表查詢（received_time > ? 取增量資料）
+SENSOR_SQL = 'SELECT timestamp_ms, x, y, z, received_time FROM sensor_data WHERE received_time > ? ORDER BY timestamp_ms ASC LIMIT 500'
+FILTERED_SQL = 'SELECT timestamp_ms, h1, h2, v, received_time FROM filtered_data WHERE received_time > ? ORDER BY timestamp_ms ASC LIMIT 500'
+INTENSITY_SQL = 'SELECT timestamp_ms, intensity, a, received_time FROM intensity_data WHERE received_time > ? ORDER BY received_time ASC LIMIT 500'
 
-    if len(intensity_time) > 0:
-        remove_count = 0
-        for t in intensity_time:
-            if t >= cutoff_time:
-                break
-            remove_count += 1
 
-        if remove_count > 0:
-            for _ in range(remove_count):
-                intensity_time.popleft()
-                intensity_history.popleft()
-                a_history.popleft()
-                intensity_timestamp.popleft()
+def _append_rows(rows, value_deques, time_deque, ts_deque, compute_pga=False):
+    """將查詢列 (timestamp_ms, *values, received_time) 寫入對應 deque。
+    回傳最後一筆 received_time（無資料則 None）。"""
+    global first_timestamp, first_received_time
+    last_rx = None
+    for row in rows:
+        timestamp = row[0]
+        received_time = row[-1]
+        values = row[1:-1]
+        last_rx = received_time
 
-    if len(filtered_time) > 0:
-        remove_count = 0
-        for t in filtered_time:
-            if t >= cutoff_time:
-                break
-            remove_count += 1
+        if first_received_time is None:
+            first_received_time = received_time
+        if timestamp >= 1000000000000 and (first_timestamp is None or timestamp < first_timestamp):
+            first_timestamp = timestamp
 
-        if remove_count > 0:
-            for _ in range(remove_count):
-                filtered_time.popleft()
-                h1_data.popleft()
-                h2_data.popleft()
-                v_data.popleft()
-                filtered_timestamp.popleft()
+        for dq, val in zip(value_deques, values):
+            dq.append(val)
+        if compute_pga:
+            x, y, z = values
+            pga_raw.append(math.hypot(x, y, z))  # sqrt(x^2 + y^2 + z^2)
+
+        if timestamp >= 1000000000000 and first_timestamp is not None:
+            adjusted_time = (timestamp - first_timestamp) / 1000.0
+        else:
+            adjusted_time = received_time - first_received_time
+        time_deque.append(adjusted_time)
+        ts_deque.append(timestamp)
+        parse_stats['total_parsed'] += 1
+    return last_rx
 
 
 async def execute_query(query, params=(), timeout=10.0):
@@ -239,126 +222,40 @@ async def websocket_receiver():
                                 cutoff_time = current_time - 60
 
                                 # 查詢 sensor 資料
-                                if last_rx_sensor is None:
-                                    sensor_rows = await execute_query(
-                                        'SELECT timestamp_ms, x, y, z, received_time FROM sensor_data WHERE received_time > ? ORDER BY timestamp_ms ASC LIMIT 500',
-                                        (cutoff_time,), timeout=2.0
-                                    )
-                                else:
-                                    sensor_rows = await execute_query(
-                                        'SELECT timestamp_ms, x, y, z, received_time FROM sensor_data WHERE received_time > ? ORDER BY timestamp_ms ASC LIMIT 500',
-                                        (last_rx_sensor,), timeout=2.0
-                                    )
-                                if sensor_rows and len(sensor_rows) > 0:
+                                sensor_rows = await execute_query(
+                                    SENSOR_SQL,
+                                    (cutoff_time if last_rx_sensor is None else last_rx_sensor,),
+                                    timeout=2.0)
+                                if sensor_rows:
                                     with data_lock:
-                                        for row in sensor_rows:
-                                            timestamp, x, y, z, received_time = row
-                                            last_rx_sensor = received_time
-
-                                            if first_received_time is None:
-                                                first_received_time = received_time
-
-                                            if timestamp >= 1000000000000:
-                                                if first_timestamp is None or timestamp < first_timestamp:
-                                                    first_timestamp = timestamp
-
-                                            x_data.append(x)
-                                            y_data.append(y)
-                                            z_data.append(z)
-                                            pga_value = np.sqrt(
-                                                x**2 + y**2 + z**2)
-                                            pga_raw.append(pga_value)
-
-                                            if timestamp >= 1000000000000 and first_timestamp is not None:
-                                                adjusted_time = (
-                                                    timestamp - first_timestamp) / 1000.0
-                                            else:
-                                                adjusted_time = received_time - first_received_time
-
-                                            time_data.append(adjusted_time)
-                                            timestamp_data.append(timestamp)
-                                            parse_stats['total_parsed'] += 1
+                                        rx = _append_rows(sensor_rows, (x_data, y_data, z_data),
+                                                          time_data, timestamp_data, compute_pga=True)
+                                    if rx is not None:
+                                        last_rx_sensor = rx
 
                                 # 查詢 filtered 資料
-                                if last_rx_filtered is None:
-                                    filtered_rows = await execute_query(
-                                        'SELECT timestamp_ms, h1, h2, v, received_time FROM filtered_data WHERE received_time > ? ORDER BY timestamp_ms ASC LIMIT 500',
-                                        (cutoff_time,), timeout=2.0
-                                    )
-                                else:
-                                    filtered_rows = await execute_query(
-                                        'SELECT timestamp_ms, h1, h2, v, received_time FROM filtered_data WHERE received_time > ? ORDER BY timestamp_ms ASC LIMIT 500',
-                                        (last_rx_filtered,), timeout=2.0
-                                    )
-
-                                if filtered_rows and len(filtered_rows) > 0:
+                                filtered_rows = await execute_query(
+                                    FILTERED_SQL,
+                                    (cutoff_time if last_rx_filtered is None else last_rx_filtered,),
+                                    timeout=2.0)
+                                if filtered_rows:
                                     with data_lock:
-                                        for row in filtered_rows:
-                                            timestamp, h1, h2, v, received_time = row
-                                            last_rx_filtered = received_time
-
-                                            if first_received_time is None:
-                                                first_received_time = received_time
-
-                                            if timestamp >= 1000000000000:
-                                                if first_timestamp is None or timestamp < first_timestamp:
-                                                    first_timestamp = timestamp
-
-                                            h1_data.append(h1)
-                                            h2_data.append(h2)
-                                            v_data.append(v)
-
-                                            if timestamp >= 1000000000000 and first_timestamp is not None:
-                                                adjusted_time_filt = (
-                                                    timestamp - first_timestamp) / 1000.0
-                                            else:
-                                                adjusted_time_filt = received_time - first_received_time
-
-                                            filtered_time.append(
-                                                adjusted_time_filt)
-                                            filtered_timestamp.append(
-                                                timestamp)
-                                            parse_stats['total_parsed'] += 1
+                                        rx = _append_rows(filtered_rows, (h1_data, h2_data, v_data),
+                                                          filtered_time, filtered_timestamp)
+                                    if rx is not None:
+                                        last_rx_filtered = rx
 
                                 # 查詢 intensity 資料
-                                if last_rx_intensity is None:
-                                    intensity_rows = await execute_query(
-                                        'SELECT timestamp_ms, intensity, a, received_time FROM intensity_data WHERE received_time > ? ORDER BY received_time ASC LIMIT 500',
-                                        (cutoff_time,), timeout=2.0
-                                    )
-                                else:
-                                    intensity_rows = await execute_query(
-                                        'SELECT timestamp_ms, intensity, a, received_time FROM intensity_data WHERE received_time > ? ORDER BY received_time ASC LIMIT 500',
-                                        (last_rx_intensity,), timeout=2.0
-                                    )
-
-                                if intensity_rows and len(intensity_rows) > 0:
+                                intensity_rows = await execute_query(
+                                    INTENSITY_SQL,
+                                    (cutoff_time if last_rx_intensity is None else last_rx_intensity,),
+                                    timeout=2.0)
+                                if intensity_rows:
                                     with data_lock:
-                                        for row in intensity_rows:
-                                            timestamp, intensity, a, received_time = row
-                                            last_rx_intensity = received_time
-
-                                            if first_received_time is None:
-                                                first_received_time = received_time
-
-                                            if timestamp >= 1000000000000:
-                                                if first_timestamp is None or timestamp < first_timestamp:
-                                                    first_timestamp = timestamp
-
-                                            intensity_history.append(intensity)
-                                            a_history.append(a)
-
-                                            if timestamp >= 1000000000000 and first_timestamp is not None:
-                                                adjusted_time_int = (
-                                                    timestamp - first_timestamp) / 1000.0
-                                            else:
-                                                adjusted_time_int = received_time - first_received_time
-
-                                            intensity_time.append(
-                                                adjusted_time_int)
-                                            intensity_timestamp.append(
-                                                timestamp)
-                                            parse_stats['total_parsed'] += 1
+                                        rx = _append_rows(intensity_rows, (intensity_history, a_history),
+                                                          intensity_time, intensity_timestamp)
+                                    if rx is not None:
+                                        last_rx_intensity = rx
 
                                 last_query_time = current_time
 

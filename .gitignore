@@ -4,3 +4,4 @@ earthquake_data.db
 *.txt
 *.mseed
 .DS_Store
+/__pycache__

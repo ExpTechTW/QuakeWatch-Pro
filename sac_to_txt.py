@@ -37,26 +37,16 @@ def convert_sac_to_txt(sac_file):
         sampling_rate = tr.stats.sampling_rate
         npts = tr.stats.npts
 
-        # 計算每個資料點的時間戳 (13位毫秒時間戳)
-        timestamps = []
-        for i in range(npts):
-            # 計算每個資料點的絕對時間
-            point_time = start_time + (i / sampling_rate)
-            # 轉換為 13 位毫秒時間戳
-            timestamp_ms = int(point_time.timestamp * 1000)
-            timestamps.append(timestamp_ms)
+        # 計算每個資料點的 13 位毫秒時間戳（向量化）
+        timestamps = ((start_time.timestamp + np.arange(npts) / sampling_rate)
+                      * 1000).astype(np.int64)
 
         # 轉換 counts (SAC 資料是浮點數，需要乘以倍數)
         counts = np.round(data * SCALE_FACTOR).astype(np.int32)
 
-        # 生成輸出檔案名稱
-        base_name = os.path.splitext(sac_file)[0]
-        txt_file = f"{base_name}.txt"
-
         # 寫入 txt 檔案
-        with open(txt_file, 'w') as f:
-            for timestamp, count in zip(timestamps, counts):
-                f.write(f"{timestamp} {count}\n")
+        txt_file = f"{os.path.splitext(sac_file)[0]}.txt"
+        np.savetxt(txt_file, np.column_stack((timestamps, counts)), fmt='%d %d')
 
         return txt_file, npts
 

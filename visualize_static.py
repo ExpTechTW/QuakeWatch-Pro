@@ -3,23 +3,15 @@ QuakeWatch - 靜態資料視覺化
 直接讀取 earthquake_data_202511101300.db 並繪製所有圖表
 """
 
-import sys
-import sqlite3
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import signal
 from datetime import datetime, timezone
 
-# 中文字體設定
-import matplotlib
-if sys.platform.startswith('win'):
-    matplotlib.rcParams['font.sans-serif'] = ['Microsoft JhengHei',
-                                              'Microsoft YaHei', 'SimHei']
-    matplotlib.rcParams['axes.unicode_minus'] = False
-elif sys.platform == 'darwin':
-    matplotlib.rcParams['font.sans-serif'] = ['PingFang SC', 'Arial Unicode MS',
-                                              'Hiragino Sans GB', 'STHeiti']
-    matplotlib.rcParams['axes.unicode_minus'] = False
+from quake_common import (setup_chinese_font, compute_psd_db,
+                          FFT_SIZE, FFT_FS, FFT_WINDOW, FFT_FREQS_POS, fetch_all)
+
+setup_chinese_font()
 
 # 資料庫檔案
 DB_FILE = 'earthquake_data_202511101300.db'
@@ -34,14 +26,6 @@ DURATION = 80         # 持續時間（秒），None = 顯示所有資料
 # START_TIME = 0, DURATION = None -> 顯示所有資料
 # =================================
 
-# FFT 參數
-FFT_SIZE = 1024
-FFT_FS = 50
-FFT_WINDOW = np.hanning(FFT_SIZE).astype(np.float32)
-FFT_PSD_SCALE = 1.0 / (FFT_FS * FFT_SIZE)
-N_HALF_PLUS_ONE = FFT_SIZE // 2 + 1
-FFT_FREQS_POS = np.fft.rfftfreq(FFT_SIZE, d=1.0/FFT_FS)
-
 # 聲譜圖參數
 SPEC_NPERSEG = 50
 SPEC_NOVERLAP = int(50 * 0.85)
@@ -51,46 +35,25 @@ SPEC_POWER_MIN = -40
 SPEC_POWER_MAX = 0
 
 
-def compute_psd_db(fft_data):
-    """計算功率譜密度並轉換為 dB"""
-    dft = fft_data[:N_HALF_PLUS_ONE]
-    psd = FFT_PSD_SCALE * np.abs(dft)**2
-    psd[1:-1] *= 2
-    psd_db = 10 * np.log10(psd + 1e-20)
-    return np.clip(psd_db, -110, 0)
+def filter_by_time(time_data, *arrays):
+    """依 START_TIME / DURATION 過濾 time_data 與對應陣列，回傳過濾後的 tuple"""
+    if DURATION is not None:
+        mask = (time_data >= START_TIME) & (time_data <= START_TIME + DURATION)
+    elif START_TIME > 0:
+        mask = time_data >= START_TIME
+    else:
+        return (time_data, *arrays)
+    return (time_data[mask], *(a[mask] for a in arrays))
 
 
 def load_data_from_db():
     """從資料庫載入所有資料"""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-
-    # 載入 sensor_data
-    cursor.execute('''
-        SELECT timestamp_ms, x, y, z, received_time
-        FROM sensor_data
-        ORDER BY timestamp_ms ASC
-    ''')
-    sensor_rows = cursor.fetchall()
-
-    # 載入 intensity_data
-    cursor.execute('''
-        SELECT timestamp_ms, intensity, a, received_time
-        FROM intensity_data
-        ORDER BY timestamp_ms ASC
-    ''')
-    intensity_rows = cursor.fetchall()
-
-    # 載入 filtered_data
-    cursor.execute('''
-        SELECT timestamp_ms, h1, h2, v, received_time
-        FROM filtered_data
-        ORDER BY timestamp_ms ASC
-    ''')
-    filtered_rows = cursor.fetchall()
-
-    conn.close()
-
+    sensor_rows = fetch_all(DB_FILE,
+        'SELECT timestamp_ms, x, y, z, received_time FROM sensor_data ORDER BY timestamp_ms ASC')
+    intensity_rows = fetch_all(DB_FILE,
+        'SELECT timestamp_ms, intensity, a, received_time FROM intensity_data ORDER BY timestamp_ms ASC')
+    filtered_rows = fetch_all(DB_FILE,
+        'SELECT timestamp_ms, h1, h2, v, received_time FROM filtered_data ORDER BY timestamp_ms ASC')
     return sensor_rows, intensity_rows, filtered_rows
 
 
@@ -109,21 +72,8 @@ def process_sensor_data(sensor_rows):
     time_data = (timestamps - first_timestamp) / 1000.0
 
     # 根據 START_TIME 和 DURATION 過濾資料
-    if DURATION is not None:
-        end_time = START_TIME + DURATION
-        mask = (time_data >= START_TIME) & (time_data <= end_time)
-        time_data = time_data[mask]
-        x_data = x_data[mask]
-        y_data = y_data[mask]
-        z_data = z_data[mask]
-        timestamps = timestamps[mask]
-    elif START_TIME > 0:
-        mask = time_data >= START_TIME
-        time_data = time_data[mask]
-        x_data = x_data[mask]
-        y_data = y_data[mask]
-        z_data = z_data[mask]
-        timestamps = timestamps[mask]
+    time_data, x_data, y_data, z_data, timestamps = filter_by_time(
+        time_data, x_data, y_data, z_data, timestamps)
 
     if len(x_data) == 0:
         return {}, first_timestamp
@@ -169,19 +119,8 @@ def process_intensity_data(intensity_rows, first_timestamp):
     time_data = (timestamps - first_timestamp) / 1000.0
 
     # 根據 START_TIME 和 DURATION 過濾資料
-    if DURATION is not None:
-        end_time = START_TIME + DURATION
-        mask = (time_data >= START_TIME) & (time_data <= end_time)
-        time_data = time_data[mask]
-        intensity = intensity[mask]
-        a_values = a_values[mask]
-        timestamps = timestamps[mask]
-    elif START_TIME > 0:
-        mask = time_data >= START_TIME
-        time_data = time_data[mask]
-        intensity = intensity[mask]
-        a_values = a_values[mask]
-        timestamps = timestamps[mask]
+    time_data, intensity, a_values, timestamps = filter_by_time(
+        time_data, intensity, a_values, timestamps)
 
     return {
         'time': time_data,
@@ -205,21 +144,8 @@ def process_filtered_data(filtered_rows, first_timestamp):
     time_data = (timestamps - first_timestamp) / 1000.0
 
     # 根據 START_TIME 和 DURATION 過濾資料
-    if DURATION is not None:
-        end_time = START_TIME + DURATION
-        mask = (time_data >= START_TIME) & (time_data <= end_time)
-        time_data = time_data[mask]
-        h1_data = h1_data[mask]
-        h2_data = h2_data[mask]
-        v_data = v_data[mask]
-        timestamps = timestamps[mask]
-    elif START_TIME > 0:
-        mask = time_data >= START_TIME
-        time_data = time_data[mask]
-        h1_data = h1_data[mask]
-        h2_data = h2_data[mask]
-        v_data = v_data[mask]
-        timestamps = timestamps[mask]
+    time_data, h1_data, h2_data, v_data, timestamps = filter_by_time(
+        time_data, h1_data, h2_data, v_data, timestamps)
 
     if len(h1_data) == 0:
         return {}

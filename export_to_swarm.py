@@ -3,12 +3,13 @@ QuakeWatch - 匯出至 miniSEED 格式
 將 earthquake_data_202511101300.db 轉換成標準 miniSEED 地震資料格式
 """
 
-import sqlite3
 import numpy as np
-from datetime import datetime, timezone
+from itertools import compress
 
 # ObsPy 匯入（用於 miniSEED 格式）
 from obspy import Trace, Stream, UTCDateTime
+
+from quake_common import fetch_all
 
 # 資料庫檔案
 DB_FILE = 'earthquake_data.db'
@@ -30,18 +31,8 @@ def get_output_prefix():
 
 def load_sensor_data():
     """從資料庫載入感測器資料"""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-
-    cursor.execute('''
-        SELECT timestamp_ms, x, y, z, received_time
-        FROM sensor_data
-        ORDER BY timestamp_ms ASC
-    ''')
-    sensor_rows = cursor.fetchall()
-    conn.close()
-
-    return sensor_rows
+    return fetch_all(DB_FILE,
+        'SELECT timestamp_ms, x, y, z, received_time FROM sensor_data ORDER BY timestamp_ms ASC')
 
 
 def filter_data_by_time(sensor_rows):
@@ -50,19 +41,14 @@ def filter_data_by_time(sensor_rows):
         return []
 
     timestamps = np.array([row[0] for row in sensor_rows])
-    first_timestamp = timestamps[0]
-    time_data = (timestamps - first_timestamp) / 1000.0
+    time_data = (timestamps - timestamps[0]) / 1000.0
 
-    # 過濾資料
     if DURATION is not None:
-        end_time = START_TIME + DURATION
-        mask = (time_data >= START_TIME) & (time_data <= end_time)
+        mask = (time_data >= START_TIME) & (time_data <= START_TIME + DURATION)
     else:
         mask = time_data >= START_TIME
 
-    filtered_rows = [sensor_rows[i]
-                     for i in range(len(sensor_rows)) if mask[i]]
-    return filtered_rows
+    return list(compress(sensor_rows, mask))
 
 
 def export_to_miniseed(sensor_rows, output_file='seismic_data.mseed'):
